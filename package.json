@@ -1,0 +1,20 @@
+{
+  "name": "hearth",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hearth — a private household finance assistant",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @hearth/server & npm run dev --workspace @hearth/web",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspace @hearth/web",
+    "seed": "npm run seed --workspace @hearth/server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
