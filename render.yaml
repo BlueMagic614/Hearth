@@ -1,0 +1,32 @@
+# Render Blueprint: one always-on web service + managed Postgres, both in Ohio.
+# In Render: New → Blueprint → pick this repo. Every push to main redeploys.
+services:
+  - type: web
+    name: hearth
+    runtime: node
+    plan: starter
+    region: ohio
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start -w @hearth/server
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hearth-db
+          property: connectionString
+      # One-time starter password for Jason and Renee; each must change it at first sign-in.
+      # Find it in Render → hearth → Environment.
+      - key: HEARTH_INITIAL_PASSWORD
+        generateValue: true
+
+databases:
+  - name: hearth-db
+    plan: basic-256mb
+    region: ohio
+    postgresMajorVersion: "16"
+    ipAllowList: []

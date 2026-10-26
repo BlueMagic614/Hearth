@@ -33,6 +33,18 @@ Starter password: `hearth-dev-password` (override with `HEARTH_DEV_PASSWORD`).
 
 For live-reloading development, run `npm run dev` (server on :8787, app on :5173 with `/api` proxied).
 
+## Deploy (Render)
+
+`render.yaml` describes the whole setup: an always-on Starter web service and a Basic Postgres database, both in Render's Ohio region.
+
+1. Sign in to Render with GitHub and allow it to see `BlueMagic614/Hearth`.
+2. **New → Blueprint**, pick the repo, and approve the two resources.
+3. When the deploy finishes, open the `hearth` service → **Environment** and copy `HEARTH_INITIAL_PASSWORD`.
+4. Visit the service URL (`https://hearth-xxxx.onrender.com`), sign in as `jason@hearth.local` with that password, and choose your own. Renee does the same with `renee@hearth.local`.
+5. On each phone, open the URL and choose **Add to Home Screen** (iPhone: Share → Add to Home Screen; Android: menu → Install app).
+
+Every push to `main` redeploys automatically. The database is only reachable from the web service.
+
 ## Tests
 
 ```bash

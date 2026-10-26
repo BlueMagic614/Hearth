@@ -10,7 +10,10 @@ const port = Number(process.env.PORT ?? 8787);
 const db = await openDb();
 const applied = await migrate(db);
 if (applied.length) console.log('Applied migrations:', applied.join(', '));
-await seedHousehold(db, { devPassword: process.env.HEARTH_DEV_PASSWORD ?? (process.env.NODE_ENV === 'production' ? undefined : 'hearth-dev-password') });
+const isProd = process.env.NODE_ENV === 'production';
+const starterPassword = process.env.HEARTH_INITIAL_PASSWORD ?? process.env.HEARTH_DEV_PASSWORD ?? (isProd ? undefined : 'hearth-dev-password');
+if (isProd && !starterPassword) console.warn('No HEARTH_INITIAL_PASSWORD set: seeded users will not be able to sign in.');
+await seedHousehold(db, { devPassword: starterPassword });
 
 const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production' });
 
