@@ -8,7 +8,14 @@ import { seedHousehold } from './seed';
 
 const port = Number(process.env.PORT ?? 8787);
 const db = await openDb();
-const applied = await migrate(db);
+const applied = await migrate(db).catch((e: { code?: string; message?: string }) => {
+  if (e.code === '28P01') {
+    console.error('Database rejected the username/password in DATABASE_URL. Re-link DATABASE_URL to the database (Render: Blueprint → Manual sync) instead of editing it by hand.');
+  } else if (e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+    console.error('Could not reach the database at DATABASE_URL. Check that the database is running and the URL is the internal one.');
+  }
+  throw e;
+});
 if (applied.length) console.log('Applied migrations:', applied.join(', '));
 const isProd = process.env.NODE_ENV === 'production';
 const starterPassword = process.env.HEARTH_INITIAL_PASSWORD ?? process.env.HEARTH_DEV_PASSWORD ?? (isProd ? undefined : 'hearth-dev-password');
