@@ -45,6 +45,19 @@ describe('auth', () => {
   });
 });
 
+describe('starter password sync', () => {
+  it('updates a never-used account to the configured starter password, but not one that chose its own', async () => {
+    const { syncStarterPassword } = await import('../src/seed');
+    await db.query("UPDATE users SET must_change_password = FALSE WHERE email = 'jason@hearth.local'");
+    expect(await syncStarterPassword(db, 'brand-new-starter-1')).toBe(1); // only Renee
+    const renee = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'renee@hearth.local', password: 'brand-new-starter-1' } });
+    expect(renee.statusCode).toBe(200);
+    const jason = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'jason@hearth.local', password: 'brand-new-starter-1' } });
+    expect(jason.statusCode).toBe(401);
+    expect(await syncStarterPassword(db, 'brand-new-starter-1')).toBe(0); // already in step
+  });
+});
+
 describe('seeded budget', () => {
   it('matches Jason\'s numbers: $9,716 income, $5,488.59 in bills, $12.41 left to assign', async () => {
     const b = await budget();

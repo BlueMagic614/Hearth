@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
 import { buildApp } from './app';
 import { migrate, openDb } from './db';
-import { seedHousehold } from './seed';
+import { seedHousehold, syncStarterPassword } from './seed';
 
 const port = Number(process.env.PORT ?? 8787);
 const db = await openDb();
@@ -21,6 +21,8 @@ const isProd = process.env.NODE_ENV === 'production';
 const starterPassword = process.env.HEARTH_INITIAL_PASSWORD ?? process.env.HEARTH_DEV_PASSWORD ?? (isProd ? undefined : 'hearth-dev-password');
 if (isProd && !starterPassword) console.warn('No HEARTH_INITIAL_PASSWORD set: seeded users will not be able to sign in.');
 await seedHousehold(db, { devPassword: starterPassword });
+const synced = await syncStarterPassword(db, starterPassword);
+if (synced) console.log(`Starter password updated for ${synced} account(s) that haven't chosen their own yet.`);
 
 const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production' });
 

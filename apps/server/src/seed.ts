@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { toCents } from '@hearth/core';
 import type { Db } from './db';
-import { hashPassword } from './auth';
+import { hashPassword, verifyPassword } from './auth';
 
 /**
  * Seeds the Green household from what Jason has provided: paychecks, the 21 fixed bills from his
@@ -67,6 +67,22 @@ const BUDGET: Group[] = [
 ];
 
 export const SEED_MONTH = '2026-10';
+
+/**
+ * Keeps the starter password in step with configuration for accounts that have never set
+ * their own password. Accounts that already chose a password are never touched.
+ */
+export async function syncStarterPassword(db: Db, password: string | undefined): Promise<number> {
+  if (!password) return 0;
+  const rows = await db.query<{ id: string; password_hash: string | null }>('SELECT id, password_hash FROM users WHERE must_change_password = TRUE');
+  let changed = 0;
+  for (const r of rows) {
+    if (await verifyPassword(password, r.password_hash)) continue;
+    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2 AND must_change_password = TRUE', [await hashPassword(password), r.id]);
+    changed++;
+  }
+  return changed;
+}
 
 export async function seedHousehold(db: Db, opts: { jasonEmail?: string; reneeEmail?: string; devPassword?: string } = {}): Promise<string> {
   const existing = await db.query<{ id: string }>('SELECT id FROM households LIMIT 1');
