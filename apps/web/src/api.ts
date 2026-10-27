@@ -27,7 +27,13 @@ export const api = {
 export interface Me { id: string; name: string; householdId: string; mustChangePassword: boolean }
 export interface BudgetView { month: string; income: number; plannedTotal: number; spentTotal: number; leftToAssign: number; tree: CategoryNode[] }
 export interface Txn { id: string; date: string; amount_cents: number; merchant: string; category_id: string | null; category_name: string | null; source: string; note: string | null }
-export interface CalendarView { month: string; events: ScheduledEvent[] }
+export interface Forecast {
+  asOf: string; startBalance: number; cushion: number; dailySpend: number;
+  points: { date: string; balance: number }[];
+  firstBelow: { date: string; balance: number } | null;
+  lowest: { date: string; balance: number } | null;
+}
+export interface CalendarView { month: string; events: ScheduledEvent[]; forecast: Forecast | null }
 export interface PlanRun { strategy: 'snowball' | 'avalanche'; months: number; doneLabel: string; totalInterest: number; paidOff: Record<string, string>; order: string[]; incomplete: boolean }
 export interface IncomeEvent { id: string; name: string; kind: 'one_time' | 'raise'; month: string; amount_cents: number; destination: 'loans' | 'emergency' | 'split'; enabled: boolean; repeats_yearly: boolean; note: string | null }
 export interface Goal { id: string; name: string; kind: 'save' | 'debt'; target_cents: number; saved_cents: number; monthly_cents: number; target_month: string | null; horizon: string | null; etaLabel: string }

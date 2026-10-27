@@ -165,6 +165,48 @@ describe('transactions', () => {
   });
 });
 
+describe('calendar due dates and forecast', () => {
+  type Ev = { scheduleId: string; originalDate: string; date: string; name: string; source: string };
+  const cal = async (m: string) => (await api('GET', `/api/calendar?month=${m}`)).body as { events: Ev[]; forecast: null | { firstBelow: unknown; points: { date: string; balance: number }[]; cushion: number } };
+
+  it('moves one occurrence just this month', async () => {
+    const aep = (await cal('2026-11')).events.find((e) => e.name === 'AEP')!;
+    expect(aep.date).toBe('2026-11-22');
+    await api('POST', '/api/calendar/move', { scheduleId: aep.scheduleId, originalDate: aep.originalDate, toDate: '2026-11-25', scope: 'once' });
+    expect((await cal('2026-11')).events.find((e) => e.name === 'AEP')).toMatchObject({ date: '2026-11-25', source: 'moved' });
+    expect((await cal('2026-12')).events.find((e) => e.name === 'AEP')!.date).toBe('2026-12-22');
+    await api('POST', '/api/calendar/reset', { scheduleId: aep.scheduleId, originalDate: aep.originalDate });
+    expect((await cal('2026-11')).events.find((e) => e.name === 'AEP')!.date).toBe('2026-11-22');
+  });
+
+  it('moves a bill for every month from now on, and marks it as a person\'s choice', async () => {
+    const gas = (await cal('2026-11')).events.find((e) => e.name === 'Columbia Gas')!;
+    await api('POST', '/api/calendar/move', { scheduleId: gas.scheduleId, originalDate: gas.originalDate, toDate: '2026-11-03', scope: 'ongoing' });
+    const dec = (await cal('2026-12')).events.find((e) => e.name === 'Columbia Gas')!;
+    expect(dec).toMatchObject({ date: '2026-12-03', source: 'manual' });
+  });
+
+  it('moves only the matching payday of a twice-a-month paycheck', async () => {
+    const pays = (await cal('2026-11')).events.filter((e) => e.name === 'Payday — Renee');
+    const second = pays.find((e) => e.originalDate === '2026-11-25')!;
+    await api('POST', '/api/calendar/move', { scheduleId: second.scheduleId, originalDate: second.originalDate, toDate: '2026-11-26', scope: 'ongoing' });
+    const dec = (await cal('2026-12')).events.filter((e) => e.name === 'Payday — Renee').map((e) => e.originalDate);
+    expect(dec).toEqual(['2026-12-10', '2026-12-26']);
+  });
+
+  it('forecasts the balance once checking is entered, and flags a dip below the cushion', async () => {
+    expect((await cal('2026-11')).forecast).toBeNull();
+    await api('PUT', '/api/accounts/checking', { balance: 200 });
+    const f = (await cal('2026-11')).forecast!;
+    expect(f.points.length).toBe(45);
+    expect(f.cushion).toBe(100000);
+    expect(f.firstBelow).not.toBeNull();
+    await api('PUT', '/api/accounts/checking', { balance: 50000 });
+    await api('PUT', '/api/settings/cushion', { amount: 0 });
+    expect((await cal('2026-11')).forecast!.cushion).toBe(0);
+  });
+});
+
 describe('plan', () => {
   it('compares strategies with interest and applies February income', async () => {
     const p = (await api('GET', '/api/plan')).body;

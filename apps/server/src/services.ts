@@ -1,6 +1,6 @@
 import {
-  addMonths, buildTree, eventsForMonth, leaves, monthLabel, parseYM, simulatePayoff,
-  type CategoryRow, type Lump, type Raise, type Schedule, type Strategy, type YearMonth,
+  addMonths, buildTree, eventsForMonth, leaves, lowBalance, monthLabel, parseYM, projectBalance, simulatePayoff,
+  type CategoryRow, type DateSource, type ISODate, type Lump, type Raise, type Schedule, type ScheduleOverride, type Strategy, type YearMonth,
 } from '@hearth/core';
 import type { Db } from './db';
 
@@ -40,21 +40,61 @@ export async function setPlanned(db: Db, categoryId: string, month: YearMonth, c
 }
 
 export async function schedulesFor(db: Db, hid: string): Promise<Schedule[]> {
-  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null }>(
+  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null; date_source: string; window_days: number }>(
     'SELECT * FROM schedules WHERE household_id = $1', [hid],
   );
-  const pay = await db.query<{ id: string; person: string; amount_cents: number; cadence: string; days: number[]; weekend_rule: string }>('SELECT * FROM income_sources WHERE household_id = $1', [hid]);
+  const pay = await db.query<{ id: string; person: string; amount_cents: number; cadence: string; days: number[]; weekend_rule: string; date_source: string; window_days: number }>('SELECT * FROM income_sources WHERE household_id = $1', [hid]);
   return [
-    ...pay.map((p): Schedule => ({ id: p.id, name: `Payday — ${p.person}`, kind: 'pay', amount: p.amount_cents, cadence: p.cadence as Schedule['cadence'], days: p.days, weekendRule: p.weekend_rule as Schedule['weekendRule'] })),
+    ...pay.map((p): Schedule => ({
+      id: p.id, name: `Payday — ${p.person}`, kind: 'pay', amount: p.amount_cents, cadence: p.cadence as Schedule['cadence'], days: p.days,
+      weekendRule: p.weekend_rule as Schedule['weekendRule'], dateSource: p.date_source as DateSource, windowDays: p.window_days,
+    })),
     ...bills.map((b): Schedule => ({
       id: b.id, name: b.name, kind: b.kind as Schedule['kind'], amount: b.amount_cents, cadence: b.cadence as Schedule['cadence'], days: b.days,
       weekday: b.weekday ?? undefined, weekendRule: b.weekend_rule as Schedule['weekendRule'], variable: b.variable, categoryId: b.category_id,
+      dateSource: b.date_source as DateSource, windowDays: b.window_days,
     })),
   ];
 }
 
-export async function calendarView(db: Db, hid: string, month: YearMonth) {
-  return { month, events: eventsForMonth(await schedulesFor(db, hid), month) };
+export async function overridesFor(db: Db, hid: string): Promise<ScheduleOverride[]> {
+  const rows = await db.query<{ schedule_id: string; original_date: string; new_date: string }>(
+    "SELECT schedule_id, to_char(original_date, 'YYYY-MM-DD') AS original_date, to_char(new_date, 'YYYY-MM-DD') AS new_date FROM schedule_overrides WHERE household_id = $1", [hid]);
+  return rows.map((r) => ({ scheduleId: r.schedule_id, originalDate: r.original_date, newDate: r.new_date }));
+}
+
+export async function getSetting<T>(db: Db, hid: string, key: string, fallback: T): Promise<T> {
+  const r = await db.query<{ value: T }>('SELECT value FROM settings WHERE household_id = $1 AND key = $2', [hid, key]);
+  return r[0] ? r[0].value : fallback;
+}
+export async function putSetting(db: Db, hid: string, key: string, value: unknown) {
+  await db.query('INSERT INTO settings (household_id, key, value) VALUES ($1,$2,$3) ON CONFLICT (household_id, key) DO UPDATE SET value = EXCLUDED.value', [hid, key, JSON.stringify(value)]);
+}
+
+/**
+ * Balance forecast for the next `days` days from `today`: checking balance + scheduled pay/bills − an everyday
+ * allowance (planned everyday categories ÷ 30). Cautious: bills at the start of their window, pay at the end.
+ * Returns null until a checking balance is known (manual now, Kemba from Phase 2).
+ */
+export async function forecastView(db: Db, hid: string, today: ISODate, days = 45) {
+  const acct = (await db.query<{ balance_cents: number; updated_at: Date | string }>(
+    "SELECT balance_cents, updated_at FROM accounts WHERE household_id = $1 AND type = 'checking' ORDER BY updated_at DESC LIMIT 1", [hid]))[0];
+  if (!acct) return null;
+  const asOf = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(acct.updated_at));
+  const month = today.slice(0, 7) as YearMonth;
+  const [schedules, overrides, rows] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid), categoryRows(db, hid, month)]);
+  const events = [month, addMonths(month, 1), addMonths(month, 2)].flatMap((m) => eventsForMonth(schedules, m, overrides));
+  const everyday = leaves(buildTree(rows)).filter((n) => n.kind === 'everyday').reduce((s, n) => s + n.planned, 0);
+  const dailySpend = Math.round(everyday / 30);
+  const cushion = await getSetting<number>(db, hid, 'balance_cushion_cents', 100000);
+  const points = projectBalance(acct.balance_cents, today, days, events, dailySpend, { cautious: true });
+  const low = lowBalance(points, cushion);
+  return { asOf, startBalance: acct.balance_cents, cushion, dailySpend, points, ...low };
+}
+
+export async function calendarView(db: Db, hid: string, month: YearMonth, today: ISODate) {
+  const events = eventsForMonth(await schedulesFor(db, hid), month, await overridesFor(db, hid));
+  return { month, events, forecast: await forecastView(db, hid, today) };
 }
 
 const monthsBetween = (from: YearMonth, to: YearMonth) => {

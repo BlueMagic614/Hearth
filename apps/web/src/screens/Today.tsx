@@ -8,8 +8,9 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
   const budget = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}`), [month]);
   const cal = useLoad(async () => {
     const [a, b] = await Promise.all([api.get<CalendarView>(`/api/calendar?month=${month}`), api.get<CalendarView>(`/api/calendar?month=${nextMonth(month)}`)]);
-    return [...a.events, ...b.events];
+    return Object.assign([...a.events, ...b.events], { forecast: a.forecast });
   }, [month]);
+  const forecast = cal.data?.forecast ?? null;
   const plan = useLoad(() => api.get<PlanView>('/api/plan'), []);
   const today = todayISO();
   const hour = new Date().getHours();
@@ -23,6 +24,14 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
   return (
     <div className="stack screen">
       <PageHead sub={new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} title={`${greeting}, ${name}`} />
+
+      {forecast?.firstBelow && (
+        <div className="notice warn" role="alert">
+          <strong>Heads up:</strong>
+          <span>Checking could drop to {usd(forecast.firstBelow.balance)} on {new Date(forecast.firstBelow.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}, below your {usd(forecast.cushion)} cushion.</span>
+          <button className="btn sm" onClick={() => go('calendar')}>See calendar</button>
+        </div>
+      )}
 
       <div className="row-wrap">
         <div className="card grow">

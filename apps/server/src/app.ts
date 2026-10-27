@@ -2,10 +2,10 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import { z } from 'zod';
-import { parseCents, subtreeIds, wouldCycle, type YearMonth } from '@hearth/core';
+import { daysInMonth, parseCents, subtreeIds, wouldCycle, type ISODate, type YearMonth } from '@hearth/core';
 import type { Db } from './db';
 import { createSession, hashPassword, newId, userForSession, verifyPassword, type SessionUser } from './auth';
-import { budgetView, calendarView, categoryRows, planView, setPlanned } from './services';
+import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -22,8 +22,13 @@ class HttpError extends Error {
 }
 const notFound = () => new HttpError(404, 'Not found');
 
+/** The household lives in Ohio; the server runs in UTC. All "today" logic uses Eastern time. */
+export const HOUSEHOLD_TZ = process.env.HEARTH_TZ ?? 'America/New_York';
+export function householdToday(now = new Date()): ISODate {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: HOUSEHOLD_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
 export function currentMonth(now = new Date()): YearMonth {
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  return householdToday(now).slice(0, 7);
 }
 
 export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean } = {}): Promise<FastifyInstance> {
@@ -274,10 +279,74 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     return { ok: true };
   });
 
-  // ---------- calendar ----------
+  // ---------- calendar, due dates and balance forecast ----------
+  const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
   app.get('/api/calendar', async (req) => {
     const q = z.object({ month: monthSchema.optional() }).parse(req.query);
-    return calendarView(db, hid(req), q.month ?? currentMonth());
+    const today = householdToday();
+    return calendarView(db, hid(req), q.month ?? (today.slice(0, 7) as YearMonth), today);
+  });
+
+  /** Finds a schedule (bill/savings move) or an income source (payday) that belongs to this household. */
+  const ownSchedule = async (req: FastifyRequest, id: string) => {
+    const bill = await db.query<{ cadence: string; days: number[] }>('SELECT cadence, days FROM schedules WHERE id = $1 AND household_id = $2', [id, hid(req)]);
+    if (bill[0]) return { table: 'schedules' as const, ...bill[0] };
+    const pay = await db.query<{ cadence: string; days: number[] }>('SELECT cadence, days FROM income_sources WHERE id = $1 AND household_id = $2', [id, hid(req)]);
+    if (pay[0]) return { table: 'income_sources' as const, ...pay[0] };
+    throw notFound();
+  };
+
+  /**
+   * Moves a calendar item. scope 'once' moves just that occurrence; 'ongoing' changes the schedule's day for this
+   * month onward (for twice-a-month items, only the matching day). Either way the date becomes a person's choice,
+   * which the agent will not overwrite when it learns dates from Kemba.
+   */
+  app.post('/api/calendar/move', async (req) => {
+    const b = z.object({ scheduleId: z.string(), originalDate: isoDay, toDate: isoDay, scope: z.enum(['once', 'ongoing']) }).parse(req.body);
+    const s = await ownSchedule(req, b.scheduleId);
+    if (b.scope === 'once') {
+      await db.query(
+        `INSERT INTO schedule_overrides (household_id, schedule_id, original_date, new_date, created_by) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (schedule_id, original_date) DO UPDATE SET new_date = EXCLUDED.new_date, created_by = EXCLUDED.created_by, created_at = now()`,
+        [hid(req), b.scheduleId, b.originalDate, b.toDate, req.user!.id],
+      );
+      return { ok: true };
+    }
+    const origDay = Number(b.originalDate.slice(8));
+    const lastOfMonth = daysInMonth(b.originalDate.slice(0, 7) as YearMonth);
+    const newDay = Number(b.toDate.slice(8));
+    const days = [...s.days];
+    const i = days.findIndex((d) => Math.min(d, lastOfMonth) === origDay);
+    if (s.cadence === 'monthly' || i < 0) days.splice(0, days.length, newDay);
+    else days[i] = newDay;
+    days.sort((a, c) => a - c);
+    await db.query(`UPDATE ${s.table} SET days = $1, date_source = 'manual', window_days = 0 WHERE id = $2`, [days, b.scheduleId]);
+    if (s.table === 'schedules') await db.query('UPDATE schedules SET due_day_confirmed = TRUE WHERE id = $1', [b.scheduleId]);
+    // The new day supersedes any one-off moves from this month on.
+    await db.query('DELETE FROM schedule_overrides WHERE schedule_id = $1 AND original_date >= $2', [b.scheduleId, `${b.originalDate.slice(0, 7)}-01`]);
+    return { ok: true, days };
+  });
+
+  app.post('/api/calendar/reset', async (req) => {
+    const b = z.object({ scheduleId: z.string(), originalDate: isoDay }).parse(req.body);
+    await ownSchedule(req, b.scheduleId);
+    await db.query('DELETE FROM schedule_overrides WHERE schedule_id = $1 AND original_date = $2 AND household_id = $3', [b.scheduleId, b.originalDate, hid(req)]);
+    return { ok: true };
+  });
+
+  /** Checking balance entered by hand until Kemba supplies it. */
+  app.put('/api/accounts/checking', async (req) => {
+    const b = z.object({ balance: money }).parse(req.body);
+    const existing = await db.query<{ id: string }>("SELECT id FROM accounts WHERE household_id = $1 AND type = 'checking' LIMIT 1", [hid(req)]);
+    if (existing[0]) await db.query('UPDATE accounts SET balance_cents = $1, updated_at = now() WHERE id = $2', [b.balance, existing[0].id]);
+    else await db.query("INSERT INTO accounts (id, household_id, name, type, institution, balance_cents) VALUES ($1,$2,'Joint Checking','checking','Kemba (entered by hand)',$3)", [newId(), hid(req), b.balance]);
+    return forecastView(db, hid(req), householdToday());
+  });
+
+  app.put('/api/settings/cushion', async (req) => {
+    const b = z.object({ amount: money }).parse(req.body);
+    await putSetting(db, hid(req), 'balance_cushion_cents', Math.max(0, b.amount));
+    return forecastView(db, hid(req), householdToday());
   });
 
   // ---------- loans, goals, one-time income ----------
