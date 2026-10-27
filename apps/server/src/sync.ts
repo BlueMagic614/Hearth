@@ -2,26 +2,28 @@ import type { BankAccount, BankProvider, BankTxn } from './bank';
 import { decrypt } from './crypto';
 import type { Db } from './db';
 import { newId } from './auth';
+import { householdToday } from './time';
+import { flowOf, runAgent, type AgentResult, type PayeeClassifier } from './agent';
 
-/** Lowercase letters and digits only, for comparing payee names: "AEP OHIO*BILL PAY" → "aepohiobillpay". */
-export const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Letters only, for comparing payee names: "KROGER #123" and "Kroger 456" → "kroger". */
+export const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
 
 const accountType = (a: BankAccount) =>
   a.type === 'depository' ? (a.subtype === 'savings' || a.subtype === 'money market' ? 'savings' : 'checking') : a.type === 'credit' ? 'credit' : a.type;
 
-export interface SyncResult { added: number; modified: number; removed: number; categorized: number; learnedDates: number }
+export interface SyncResult { added: number; modified: number; removed: number; categorized: number; review: number; learnedDates: number; agent?: AgentResult }
 
 /**
  * Pulls accounts and every page of new transactions for one connection, applies them, sorts what it can, and
  * learns due dates. Safe to run repeatedly: Plaid's cursor makes each run pick up only what changed.
  */
-export async function syncConnection(db: Db, bank: BankProvider, connectionId: string): Promise<SyncResult> {
+export async function syncConnection(db: Db, bank: BankProvider, connectionId: string, opts: { classifier?: PayeeClassifier | null; today?: string } = {}): Promise<SyncResult> {
   const conn = (await db.query<{ id: string; household_id: string; access_token_enc: string; cursor: string | null }>(
     'SELECT id, household_id, access_token_enc, cursor FROM bank_connections WHERE id = $1', [connectionId]))[0];
   if (!conn) throw new Error('Connection not found');
   const hid = conn.household_id;
   const token = decrypt(conn.access_token_enc);
-  const result: SyncResult = { added: 0, modified: 0, removed: 0, categorized: 0, learnedDates: 0 };
+  const result: SyncResult = { added: 0, modified: 0, removed: 0, categorized: 0, review: 0, learnedDates: 0 };
 
   try {
     // 1. Accounts and balances
@@ -58,7 +60,6 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
       if (!page.hasMore) break;
     }
 
-    const newIds: string[] = [];
     for (const t of [...added, ...modified]) {
       // When a pending charge posts, keep the category the household (or the agent) already gave it.
       let carried: { category_id: string | null; source: string } | undefined;
@@ -67,22 +68,25 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
       }
       const id = newId();
       const rows = await db.query<{ id: string; inserted: boolean }>(
-        `INSERT INTO transactions (id, household_id, account_id, external_id, pending_external_id, date, authorized_date, amount_cents, merchant, raw_name, bank_category, pending, category_id, source)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        `INSERT INTO transactions (id, household_id, account_id, external_id, pending_external_id, date, authorized_date, amount_cents, merchant, raw_name, bank_category, pending, category_id, source, flow)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (external_id) DO UPDATE SET date = EXCLUDED.date, authorized_date = EXCLUDED.authorized_date, amount_cents = EXCLUDED.amount_cents,
            merchant = EXCLUDED.merchant, raw_name = EXCLUDED.raw_name, bank_category = EXCLUDED.bank_category, pending = EXCLUDED.pending
          RETURNING id, (xmax = 0) AS inserted`,
         [id, hid, acctIds.get(t.accountExternalId) ?? null, t.externalId, t.pendingExternalId, t.date, t.authorizedDate, t.amount,
-          t.merchantName || t.name, t.name, t.category, t.pending, carried?.category_id ?? null, carried?.category_id ? carried.source : 'bank'],
+          t.merchantName || t.name, t.name, t.category, t.pending, carried?.category_id ?? null, carried?.category_id ? carried.source : 'bank', flowOf(t.category, t.amount)],
       );
-      if (rows[0]?.inserted) { result.added++; if (!carried?.category_id) newIds.push(rows[0].id); } else result.modified++;
+      if (rows[0]?.inserted) result.added++; else result.modified++;
     }
     if (removed.length) {
       const r = await db.query('DELETE FROM transactions WHERE external_id = ANY($1) RETURNING id', [removed]);
       result.removed = r.length;
     }
 
-    result.categorized = await categorize(db, hid, newIds);
+    const agent = await runAgent(db, hid, { classifier: opts.classifier, today: opts.today ?? householdToday() });
+    result.agent = agent;
+    result.categorized = agent.remembered + agent.model + agent.bank + agent.claude;
+    result.review = agent.review;
     result.learnedDates = await learnDueDates(db, hid);
 
     await db.query("UPDATE bank_connections SET cursor = $1, last_synced_at = now(), status = 'ok', last_error = NULL WHERE id = $2", [cursor, conn.id]);
@@ -95,6 +99,9 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
     throw e;
   }
 }
+
+/** Words too common to identify a bill's payee ("Pet insurance" must not catch PetSmart). */
+const GENERIC = new Set(['the', 'my', 'pet', 'car', 'home', 'auto', 'life', 'student', 'boy', 'boys', 'kids', 'music', 'lessons', 'insurance', 'internet', 'mobile', 'extra', 'lunch', 'accounts', 'modern', 'rent']);
 
 /**
  * First-pass sorting until the Phase 3 agent arrives:
@@ -113,24 +120,24 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
     if (!key) continue;
     const prior = (await db.query<{ category_id: string; schedule_id: string | null }>(
       `SELECT category_id, schedule_id FROM transactions WHERE household_id = $1 AND id <> $2 AND category_id IS NOT NULL AND source IN ('you','rule','manual')
-         AND regexp_replace(lower(merchant), '[^a-z0-9]', '', 'g') = $3 ORDER BY date DESC LIMIT 1`, [hid, t.id, key]))[0];
+         AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $3 ORDER BY date DESC LIMIT 1`, [hid, t.id, key]))[0];
     if (prior) {
       // Same payee, same category, and the same bill link (so repeat payments teach the due date).
-      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule' WHERE id = $3", [prior.category_id, prior.schedule_id, t.id]);
+      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule', needs_review = FALSE, suggested_category_id = NULL WHERE id = $3", [prior.category_id, prior.schedule_id, t.id]);
       n++;
       continue;
     }
     if (t.amount_cents >= 0) continue;
     const bill = bills.find((b) => {
       // Match on the brand word ("Columbia" in "Columbia Gas"), never generic words like "gas" that a gas station shares.
-      const brand = b.name.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-z0-9]+/).find((w) => w.length >= 3 && !['the', 'my'].includes(w));
+      const brand = b.name.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-z0-9]+/).find((w) => w.length >= 3 && !GENERIC.has(w));
       const nameHit = !!brand && key.includes(brand);
       const tolerance = b.variable ? 0.6 : 0.25;
       const amountHit = Math.abs(Math.abs(t.amount_cents) - Math.abs(b.amount_cents)) <= Math.abs(b.amount_cents) * tolerance;
       return nameHit && amountHit;
     });
     if (bill?.category_id) {
-      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule' WHERE id = $3", [bill.category_id, bill.id, t.id]);
+      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule', needs_review = FALSE, suggested_category_id = NULL WHERE id = $3", [bill.category_id, bill.id, t.id]);
       n++;
     }
   }
@@ -160,11 +167,11 @@ export async function learnDueDates(db: Db, hid: string): Promise<number> {
 }
 
 /** Runs a sync for every connection in a household, collecting errors instead of stopping at the first. */
-export async function syncHousehold(db: Db, bank: BankProvider, hid: string) {
+export async function syncHousehold(db: Db, bank: BankProvider, hid: string, opts: { classifier?: PayeeClassifier | null } = {}) {
   const conns = await db.query<{ id: string }>('SELECT id FROM bank_connections WHERE household_id = $1', [hid]);
   const out: { id: string; ok: boolean; result?: SyncResult; error?: string }[] = [];
   for (const c of conns) {
-    try { out.push({ id: c.id, ok: true, result: await syncConnection(db, bank, c.id) }); }
+    try { out.push({ id: c.id, ok: true, result: await syncConnection(db, bank, c.id, opts) }); }
     catch (e) { out.push({ id: c.id, ok: false, error: (e as Error).message }); }
   }
   return out;

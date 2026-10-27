@@ -26,7 +26,7 @@ export const api = {
 
 export interface Me { id: string; name: string; householdId: string; mustChangePassword: boolean }
 export interface BudgetView { month: string; income: number; plannedTotal: number; spentTotal: number; leftToAssign: number; tree: CategoryNode[] }
-export interface Txn { id: string; date: string; amount_cents: number; merchant: string; category_id: string | null; category_name: string | null; source: string; note: string | null; pending?: boolean }
+export interface Txn { id: string; date: string; amount_cents: number; merchant: string; category_id: string | null; category_name: string | null; source: string; note: string | null; pending?: boolean; flow?: 'spend' | 'income' | 'transfer'; needs_review?: boolean; confidence?: number | null }
 export interface Forecast {
   asOf: string; startBalance: number; fromBank?: boolean; cushion: number; dailySpend: number;
   points: { date: string; balance: number }[];

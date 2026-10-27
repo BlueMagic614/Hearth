@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView, type Txn } from '../api';
+import { ReviewList } from '../components/ReviewList';
 import { MonthPicker, PageHead, Tip, todayISO, useLoad, usd } from '../components/ui';
 
 /** Every leaf category with its path, e.g. "Other › Hobbies › Music gear". */
@@ -57,15 +58,23 @@ export function Transactions({ month, setMonth }: { month: string; setMonth: (m:
         {err && <div className="notice warn" style={{ flexBasis: '100%' }}>{err}</div>}
       </form>
 
+      <ReviewList options={options} onChange={txns.reload} />
+
       <div className="card" style={{ padding: '8px 22px 12px' }}>
         {txns.data && txns.data.length === 0 && <div className="muted" style={{ padding: '18px 0' }}>Nothing yet this month. Connect Kemba under Accounts, or add a purchase above.</div>}
         {txns.data?.map((t) => (
           <div key={t.id} className="list-row" style={{ flexWrap: 'wrap' }}>
             <span className="muted" style={{ width: 56, fontSize: 13 }}>{new Date(t.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-            <span style={{ flex: '1 1 160px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge" title="Still pending at Kemba; the amount or date can change when it posts">Pending</span>}{t.source === 'rule' && <span className="pending-badge" title="Sorted automatically from a past choice or a matching bill. Change it if it's wrong and Hearth will remember.">Auto</span>}</span>
-            <select className="input sm" style={{ flex: '1 1 200px', maxWidth: 280 }} value={t.category_id ?? ''} aria-label={`Category for ${t.merchant}`}
-              onChange={(e) => api.patch(`/api/transactions/${t.id}`, { categoryId: e.target.value || null }).then(txns.reload)}>
-              <option value="">Uncategorized</option>
+            <span style={{ flex: '1 1 160px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge" title="Still pending at Kemba; the amount or date can change when it posts">Pending</span>}{['rule', 'agent', 'bank', 'claude'].includes(t.source) && t.category_id && <span className="pending-badge" title={`Sorted automatically (${{ rule: 'a past choice or a matching bill', agent: 'learned from your choices', bank: "Kemba's category", claude: 'Claude' }[t.source]}). Change it if it's wrong and Hearth will remember.`}>Auto</span>}</span>
+            <select className="input sm" style={{ flex: '1 1 200px', maxWidth: 280 }} value={t.category_id ?? (t.flow && t.flow !== 'spend' ? `__${t.flow}` : '')} aria-label={`Category for ${t.merchant}`}
+              onChange={(e) => {
+                const v = e.target.value;
+                const body = v === '__transfer' || v === '__income' ? { flow: v.slice(2), categoryId: null } : { categoryId: v || null, flow: 'spend' };
+                api.patch(`/api/transactions/${t.id}`, body).then(txns.reload);
+              }}>
+              <option value="">{t.needs_review ? 'Needs a look' : 'Uncategorized'}</option>
+              <option value="__transfer">Transfer between our accounts</option>
+              <option value="__income">Income (pay, deposits)</option>
               {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
             </select>
             <span style={{ width: 100, textAlign: 'right', fontWeight: 500 }} className={t.amount_cents > 0 ? 'good' : undefined}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>

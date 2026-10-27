@@ -12,6 +12,7 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
   }, [month]);
   const forecast = cal.data?.forecast ?? null;
   const plan = useLoad(() => api.get<PlanView>('/api/plan'), []);
+  const review = useLoad(() => api.get<{ count: number }>('/api/review'), []);
   const today = todayISO();
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -32,6 +33,13 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
           <strong>Heads up:</strong>
           <span>Checking could drop to {usd(forecast.firstBelow.balance)} on {new Date(forecast.firstBelow.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}, below your {usd(forecast.cushion)} cushion.</span>
           <button className="btn sm" onClick={() => go('calendar')}>See calendar</button>
+        </div>
+      )}
+
+      {!!review.data?.count && (
+        <div className="notice good">
+          <span>{review.data.count} purchase{review.data.count === 1 ? '' : 's'} need{review.data.count === 1 ? 's' : ''} a quick look. Hearth has a guess ready for most.</span>
+          <button className="btn sm" onClick={() => go('txns')}>Review</button>
         </div>
       )}
 

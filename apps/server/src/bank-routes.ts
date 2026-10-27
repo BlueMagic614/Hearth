@@ -6,14 +6,15 @@ import type { Db } from './db';
 import { newId } from './auth';
 import { HttpError, notFound } from './errors';
 import { syncConnection } from './sync';
+import type { PayeeClassifier } from './agent';
 
-interface Opts { bank: BankProvider | null; hid: (req: FastifyRequest) => string; webhookDelayMs?: number }
+interface Opts { bank: BankProvider | null; hid: (req: FastifyRequest) => string; webhookDelayMs?: number; classifier?: PayeeClassifier | null }
 
 /**
  * Kemba via Plaid: link token → Plaid Link in the browser → public token exchanged here for an access token
  * (encrypted at rest) → sync. Plaid then calls the webhook whenever new transactions are ready.
  */
-export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, hid, webhookDelayMs = 2000 }: Opts) {
+export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, hid, webhookDelayMs = 2000, classifier = null }: Opts) {
   const need = () => {
     if (!bank) throw new HttpError(503, "Bank connection isn't set up on the server yet (Plaid keys missing).");
     return bank;
@@ -30,7 +31,7 @@ export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, h
   const runSync = (connId: string) => {
     const existing = running.get(connId);
     if (existing) return existing;
-    const p = syncConnection(db, need(), connId).finally(() => running.delete(connId));
+    const p = syncConnection(db, need(), connId, { classifier }).finally(() => running.delete(connId));
     running.set(connId, p);
     return p;
   };

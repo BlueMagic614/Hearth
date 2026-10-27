@@ -31,6 +31,9 @@ services:
         sync: false
       - key: PLAID_SECRET_SANDBOX
         sync: false
+      # Optional: lets the categorization agent ask Claude about payees it hasn't seen (console.anthropic.com).
+      - key: ANTHROPIC_API_KEY
+        sync: false
 
 databases:
   - name: hearth-db

@@ -8,6 +8,9 @@ import { createSession, hashPassword, newId, userForSession, verifyPassword, typ
 import { HttpError, notFound } from './errors';
 import type { BankProvider } from './bank';
 import { registerBankRoutes } from './bank-routes';
+import { registerAgentRoutes } from './agent-routes';
+import type { PayeeClassifier } from './agent';
+import { categorize, norm } from './sync';
 import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
 
 declare module 'fastify' {
@@ -21,16 +24,10 @@ const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 const money = z.union([z.number(), z.string()]).transform((v) => parseCents(v));
 
 
-/** The household lives in Ohio; the server runs in UTC. All "today" logic uses Eastern time. */
-export const HOUSEHOLD_TZ = process.env.HEARTH_TZ ?? 'America/New_York';
-export function householdToday(now = new Date()): ISODate {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: HOUSEHOLD_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
-export function currentMonth(now = new Date()): YearMonth {
-  return householdToday(now).slice(0, 7);
-}
+export { HOUSEHOLD_TZ, householdToday, currentMonth } from './time';
+import { householdToday, currentMonth } from './time';
 
-export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number } = {}): Promise<FastifyInstance> {
+export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number; classifier?: PayeeClassifier | null } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
   await app.register(cors, { origin: opts.webOrigin ?? true, credentials: true });
@@ -239,7 +236,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.get('/api/transactions', async (req) => {
     const q = z.object({ month: monthSchema.optional() }).parse(req.query);
     return db.query(
-      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending
+      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending, t.flow, t.needs_review, t.confidence
        FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
        WHERE t.household_id = $1 AND to_char(t.date, 'YYYY-MM') = $2 ORDER BY t.date DESC, t.created_at DESC`,
       [hid(req), q.month ?? currentMonth()],
@@ -252,6 +249,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     merchant: z.string().trim().min(1).max(120),
     categoryId: z.string().nullable().optional(),
     note: z.string().max(500).optional(),
+    /** Spending, income, or a transfer between the household's own accounts. */
+    flow: z.enum(['spend', 'income', 'transfer']).optional(),
   });
   app.post('/api/transactions', async (req) => {
     const b = txnBody.parse(req.body);
@@ -273,11 +272,29 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     if (b.merchant !== undefined) add('merchant', b.merchant);
     if (b.categoryId !== undefined) { add('category_id', b.categoryId); add('source', 'you'); }
     if (b.note !== undefined) add('note', b.note);
+    if (b.flow !== undefined) add('flow', b.flow);
+    if (b.categoryId !== undefined || b.flow !== undefined) { add('needs_review', false); add('suggested_category_id', null); }
     if (!sets.length) return { ok: true };
     vals.push(id, hid(req));
-    const r = await db.query(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND household_id = $${vals.length} RETURNING id`, vals);
+    const r = await db.query<{ merchant: string }>(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND household_id = $${vals.length} RETURNING merchant`, vals);
     if (!r.length) throw notFound();
-    return { ok: true };
+    // Teach by example: other unsorted transactions from the same payee follow this choice right away.
+    const key = norm(r[0]!.merchant);
+    let alsoSorted = 0;
+    if (key && b.flow && b.flow !== 'spend') {
+      await db.query(
+        `INSERT INTO payee_hints (household_id, merchant_key, flow, source) VALUES ($1,$2,$3,'you')
+         ON CONFLICT (household_id, merchant_key) DO UPDATE SET flow = EXCLUDED.flow, source = 'you', updated_at = now()`, [hid(req), key, b.flow]);
+      const o = await db.query(`UPDATE transactions SET flow = $1, needs_review = FALSE, suggested_category_id = NULL
+        WHERE household_id = $2 AND category_id IS NULL AND flow = 'spend' AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $3 RETURNING id`, [b.flow, hid(req), key]);
+      alsoSorted = o.length;
+    } else if (key && b.categoryId) {
+      if (b.flow === undefined || b.flow === 'spend') await db.query("DELETE FROM payee_hints WHERE household_id = $1 AND merchant_key = $2 AND flow IS NOT NULL AND flow <> 'spend'", [hid(req), key]);
+      const others = await db.query<{ id: string }>(`SELECT id FROM transactions WHERE household_id = $1 AND category_id IS NULL AND flow = 'spend'
+        AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $2`, [hid(req), key]);
+      alsoSorted = await categorize(db, hid(req), others.map((o) => o.id));
+    }
+    return { ok: true, alsoSorted };
   });
   app.delete('/api/transactions/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
@@ -401,7 +418,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     return { ok: true };
   });
 
-  await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs });
+  await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs, classifier: opts.classifier ?? null });
+  await registerAgentRoutes(app, db, { classifier: opts.classifier ?? null, hid });
 
   return app;
 }

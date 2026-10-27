@@ -7,6 +7,8 @@ import { migrate, openDb } from './db';
 import { seedHousehold, syncStarterPassword } from './seed';
 import { bankFromEnv } from './bank';
 import { syncConnection } from './sync';
+import { classifierFromEnv, runAgent } from './agent';
+import { householdToday } from './time';
 
 const port = Number(process.env.PORT ?? 8787);
 const db = await openDb();
@@ -28,7 +30,9 @@ if (synced) console.log(`Starter password updated for ${synced} account(s) that 
 
 const bank = bankFromEnv();
 console.log(bank ? `Bank sync: Plaid ${bank.environment}` : 'Bank sync: off (no Plaid keys)');
-const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production', bank });
+const classifier = classifierFromEnv();
+console.log(classifier ? 'Categorization agent: learned model + Claude for new payees' : 'Categorization agent: learned model (no ANTHROPIC_API_KEY, new payees go to review)');
+const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production', bank, classifier });
 
 // In production the server also serves the built web app.
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
@@ -47,11 +51,19 @@ console.log(`Hearth server on http://localhost:${port}`);
 if (bank) {
   const catchUp = async () => {
     const conns = await db.query<{ id: string }>("SELECT id FROM bank_connections WHERE status <> 'login_required' AND (last_synced_at IS NULL OR last_synced_at < now() - interval '5 hours')");
-    for (const c of conns) await syncConnection(db, bank, c.id).catch((e) => console.error('Catch-up sync failed:', (e as Error).message));
+    for (const c of conns) await syncConnection(db, bank, c.id, { classifier }).catch((e) => console.error('Catch-up sync failed:', (e as Error).message));
   };
   setInterval(() => void catchUp(), 60 * 60 * 1000).unref();
   setTimeout(() => void catchUp(), 30_000).unref();
 }
+
+// Sort existing history once at startup (also picks up anything new the agent can now handle).
+setTimeout(async () => {
+  for (const h of await db.query<{ id: string }>('SELECT id FROM households')) {
+    const r = await runAgent(db, h.id, { classifier, today: householdToday() }).catch((e) => ({ error: (e as Error).message }));
+    console.log('Agent run at startup:', JSON.stringify(r));
+  }
+}, 5_000).unref();
 
 // Close the database cleanly so the local (PGlite) data files are always flushed.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

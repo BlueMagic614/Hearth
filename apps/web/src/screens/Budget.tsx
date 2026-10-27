@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView } from '../api';
+import { SpendingSuggestions } from '../components/SpendingSuggestions';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
 
 interface Props { month: string; setMonth: (m: string) => void; onBreakdown: (parentId: string) => void }
@@ -15,6 +16,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const [newParent, setNewParent] = useState('Other');
   const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void> } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
 
   const run = async (fn: () => Promise<unknown>) => {
     try { setFailure(null); await fn(); reload(); } catch (e) { setFailure((e as Error).message); }
@@ -223,7 +225,12 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
   return (
     <div className="stack screen">
-      <PageHead sub="Zero-based: give every dollar a job" title="Budget"><MonthPicker month={month} onChange={setMonth} /></PageHead>
+      <PageHead sub="Zero-based: give every dollar a job" title="Budget">
+        <button className="btn" onClick={() => setSuggesting(true)}>Set from spending</button>
+        <MonthPicker month={month} onChange={setMonth} />
+      </PageHead>
+      {suggesting && <SpendingSuggestions month={month} leftToAssign={left} onClose={() => setSuggesting(false)}
+        onApplied={(n) => { setSuggesting(false); reload(); setToast({ message: `Updated ${n} categor${n === 1 ? 'y' : 'ies'} from your spending.` }); }} />}
 
       <div className="row-wrap">
         <div className="card grow"><div className="stat-label">Take-home this month</div><div className="stat-value" style={{ fontSize: 24 }}>{usd(data.income)}</div></div>
