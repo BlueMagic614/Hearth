@@ -134,6 +134,37 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     return { ok: true };
   });
 
+  /**
+   * Drag-and-drop move. position 'inside' nests the category under the target (the target becomes a parent);
+   * 'before' / 'after' place it next to the target, under the target's parent, in that order.
+   */
+  app.post('/api/categories/:id/move', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const b = z.object({ targetId: z.string(), position: z.enum(['before', 'after', 'inside']), month: monthSchema }).parse(req.body);
+    if (id === b.targetId) throw new HttpError(400, 'A category cannot go inside itself');
+    await ownCategory(req, id);
+    const target = await ownCategory(req, b.targetId);
+    const newParent = b.position === 'inside' ? target.id : target.parent_id;
+    const rows = await categoryRows(db, hid(req), b.month);
+    if (wouldCycle(rows, id, newParent)) throw new HttpError(400, 'A category cannot go inside itself');
+    if (newParent) await ensureParent(hid(req), newParent, b.month);
+
+    // Re-number the destination siblings so the moved category lands exactly where it was dropped.
+    const siblings = (await db.query<{ id: string }>(
+      'SELECT id FROM categories WHERE household_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND NOT archived AND id <> $3 ORDER BY sort_order, name',
+      [hid(req), newParent, id],
+    )).map((r) => r.id);
+    let index = siblings.length;
+    if (b.position !== 'inside') {
+      const at = siblings.indexOf(target.id);
+      index = at < 0 ? siblings.length : b.position === 'before' ? at : at + 1;
+    }
+    siblings.splice(index, 0, id);
+    await db.query('UPDATE categories SET parent_id = $1 WHERE id = $2', [newParent, id]);
+    for (const [i, sid] of siblings.entries()) await db.query('UPDATE categories SET sort_order = $1 WHERE id = $2', [i, sid]);
+    return { ok: true, parentId: newParent };
+  });
+
   /** Turns a category into a parent: its money moves to a "General" subcategory. */
   app.post('/api/categories/:id/split', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);

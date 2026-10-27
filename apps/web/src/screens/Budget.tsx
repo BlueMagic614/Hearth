@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView } from '../api';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
@@ -19,6 +19,72 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const run = async (fn: () => Promise<unknown>) => {
     try { setFailure(null); await fn(); reload(); } catch (e) { setFailure((e as Error).message); }
   };
+
+  // ---- drag and drop (pointer events, so it works with mouse, pen and touch) ----
+  type DropPos = 'before' | 'after' | 'inside';
+  const [drag, setDrag] = useState<{ id: string; name: string; x: number; y: number } | null>(null);
+  const [drop, setDrop] = useState<{ id: string; pos: DropPos } | null>(null);
+  const dropRef = useRef(drop);
+  dropRef.current = drop;
+  const blocked = useRef<Set<string>>(new Set());
+
+  const startDrag = (e: React.PointerEvent, n: CategoryNode) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const ids = new Set<string>();
+    const walk = (x: CategoryNode) => { ids.add(x.id); x.children.forEach(walk); };
+    walk(n);
+    blocked.current = ids;
+    setRenaming(null);
+    setDrag({ id: n.id, name: n.name, x: e.clientX, y: e.clientY });
+  };
+
+  useEffect(() => {
+    if (!drag) return;
+    const dragId = drag.id;
+    let lastY = drag.y;
+    let raf = 0;
+    document.body.classList.add('dragging');
+    const move = (e: PointerEvent) => {
+      lastY = e.clientY;
+      setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY } : d));
+      const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>('[data-cat-id]');
+      const id = el?.dataset.catId;
+      if (!el || !id || blocked.current.has(id)) { setDrop(null); return; }
+      const r = el.getBoundingClientRect();
+      const f = (e.clientY - r.top) / r.height;
+      const pos: DropPos = f < 0.28 ? 'before' : f > 0.72 ? 'after' : 'inside';
+      setDrop((p) => (p?.id === id && p.pos === pos ? p : { id, pos }));
+    };
+    const tick = () => {
+      if (lastY < 90) window.scrollBy(0, -14);
+      else if (lastY > window.innerHeight - 120) window.scrollBy(0, 14);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    const finish = (commit: boolean) => {
+      const d = dropRef.current;
+      setDrag(null);
+      setDrop(null);
+      if (commit && d) run(() => api.post(`/api/categories/${dragId}/move`, { targetId: d.id, position: d.pos, month }));
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') finish(false); };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', cancel);
+    addEventListener('keydown', key);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.body.classList.remove('dragging');
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      removeEventListener('pointercancel', cancel);
+      removeEventListener('keydown', key);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag?.id]);
 
   const commitRename = () => {
     if (!renaming) return;
@@ -53,6 +119,10 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
   const left = data.leftToAssign;
   const tops = data.tree;
+  const nameOf = (id: string): string => {
+    const find = (ns: CategoryNode[]): CategoryNode | undefined => { for (const x of ns) { if (x.id === id) return x; const f = find(x.children); if (f) return f; } return undefined; };
+    return find(tops)?.name ?? '';
+  };
 
   const nameCell = (n: CategoryNode, size: number, weight: number) =>
     renaming?.id === n.id ? (
@@ -116,9 +186,17 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
       </span>
     );
 
+  const rowClass = (n: CategoryNode) =>
+    'brow' + (drag?.id === n.id ? ' is-dragging' : '') + (drop?.id === n.id ? ` drop-${drop.pos}` : '');
+
   const renderNode = (n: CategoryNode, depth: number, isTop: boolean) => (
     <div key={n.id} className={isTop ? 'bparent' : undefined}>
-      <div className="brow" style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}>
+      <div className={rowClass(n)} data-cat-id={editing ? n.id : undefined} style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}>
+        {editing && (
+          <button type="button" className="grip" aria-label={`Drag ${n.name}`} title="Drag to move" onPointerDown={(e) => startDrag(e, n)}>
+            <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="8" r="1.5" /><circle cx="9" cy="8" r="1.5" /><circle cx="3" cy="13" r="1.5" /><circle cx="9" cy="13" r="1.5" /></svg>
+          </button>
+        )}
         {editing && (isTop && n.children.length ? <span className="c-check" /> : check(n))}
         <div className="name" style={{ paddingLeft: isTop ? 0 : 14 + (depth - 1) * 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -160,7 +238,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
       <div className="card" style={{ padding: '8px 22px 16px' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--line)' }}>
           <div className="stat-label" style={{ flex: '1 1 260px' }}>
-            {editing ? 'Rename, re-amount, split or delete. Tick categories to move or group them.' : 'Tap Edit categories to add, delete, split or regroup.'}
+            {editing ? 'Drag ⠿ to move: drop onto a category to put it inside, or between rows to reorder.' : 'Tap Edit categories to add, delete, move, split or regroup.'}
             <Tip label="About parent categories" text="Parents hold categories, and any category can be split into subcategories. Totals roll up. Moving a category keeps all of its transactions." />
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -186,6 +264,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
         <div className="table-scroll">
           <div className="btable">
             <div className="brow bhead">
+              {editing && <span style={{ width: 22 }} />}
               {editing && <span className="c-check" />}
               <span className="name">Category</span><span className="c-planned">Planned</span><span className="c-spent">Spent</span><span className="c-left">Remaining</span>
               {editing && <span className="c-actions" />}
@@ -194,6 +273,13 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
           </div>
         </div>
       </div>
+
+      {drag && (
+        <div className="drag-ghost" style={{ left: drag.x + 14, top: drag.y + 14 }} aria-hidden="true">
+          <strong>{drag.name}</strong>
+          <span>{drop ? `${drop.pos === 'inside' ? 'Into' : drop.pos === 'before' ? 'Above' : 'Below'} ${nameOf(drop.id)}` : 'Drop on a category'}</span>
+        </div>
+      )}
 
       {toast && <Toast message={toast.message} action={toast.undo ? 'Undo' : undefined} onAction={() => { toast.undo?.(); setToast(null); }} onClose={() => setToast(null)} />}
     </div>

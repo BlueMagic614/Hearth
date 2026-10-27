@@ -115,6 +115,37 @@ describe('editing categories', () => {
     expect((await budget()).leftToAssign).toBe(1241);
   });
 
+  it('drags categories into a new "Sinking fund" parent and reorders them', async () => {
+    const created = await api('POST', '/api/categories', { name: 'Sinking fund', parentId: null, planned: 0, month: M });
+    let t = (await budget()).tree;
+    const dates = find(t, 'Date nights')!.id;
+    const outings = find(t, 'Family outings')!.id;
+    await api('POST', `/api/categories/${dates}/move`, { targetId: created.body.id, position: 'inside', month: M });
+    await api('POST', `/api/categories/${outings}/move`, { targetId: dates, position: 'before', month: M });
+    t = (await budget()).tree;
+    const sf = find(t, 'Sinking fund')!;
+    expect(sf.children.map((c) => c.name)).toEqual(['Family outings', 'Date nights']);
+    expect(sf.children.some((c) => c.name === 'General')).toBe(false); // it had no money of its own
+    expect(sf.totalPlanned).toBe(25000);
+    expect((await budget()).leftToAssign).toBe(1241);
+  });
+
+  it('moves a category back to the top level next to a parent', async () => {
+    let t = (await budget()).tree;
+    const outings = find(t, 'Family outings')!.id;
+    const food = find(t, 'Food')!.id;
+    await api('POST', `/api/categories/${outings}/move`, { targetId: food, position: 'after', month: M });
+    t = (await budget()).tree;
+    const i = t.findIndex((n) => n.name === 'Food');
+    expect(t[i + 1]!.name).toBe('Family outings');
+  });
+
+  it('refuses to drop a parent into its own child', async () => {
+    const t = (await budget()).tree;
+    const r = await api('POST', `/api/categories/${find(t, 'Sinking fund')!.id}/move`, { targetId: find(t, 'Date nights')!.id, position: 'inside', month: M });
+    expect(r.status).toBe(400);
+  });
+
   it('refuses to put a category inside itself', async () => {
     const t = (await budget()).tree;
     const other = find(t, 'Other')!;
