@@ -180,3 +180,15 @@ describe('disconnecting', () => {
     await bare.close();
   });
 });
+
+describe('Plaid errors', () => {
+  it('shows Plaid\'s own message instead of a generic error', async () => {
+    const failing = Object.create(bank) as FakeBank;
+    failing.createLinkToken = async () => { throw Object.assign(new Error('Request failed with status code 400'), { response: { data: { error_type: 'INVALID_INPUT', error_code: 'INVALID_API_KEYS', error_message: 'invalid client_id or secret provided', display_message: null } } }); };
+    const a = await buildApp(db, { bank: failing });
+    const res = await a.inject({ method: 'POST', url: '/api/plaid/link-token', payload: {}, headers: { cookie } });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe('Plaid: invalid client_id or secret provided (INVALID_API_KEYS)');
+    await a.close();
+  });
+});

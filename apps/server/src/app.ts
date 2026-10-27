@@ -38,6 +38,12 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: err.message });
     if (err instanceof z.ZodError) return reply.status(400).send({ error: 'Invalid input', issues: err.issues });
+    // Plaid API errors carry a code and a readable message; pass them through (they never contain secrets).
+    const plaid = (err as { response?: { data?: { error_code?: string; error_type?: string; error_message?: string; display_message?: string | null; request_id?: string } } }).response?.data;
+    if (plaid?.error_code) {
+      console.error('Plaid error', plaid.error_type, plaid.error_code, plaid.error_message, 'request', plaid.request_id);
+      return reply.status(502).send({ error: `Plaid: ${plaid.display_message || plaid.error_message} (${plaid.error_code})` });
+    }
     console.error(err);
     reply.status(500).send({ error: 'Something went wrong' });
   });
