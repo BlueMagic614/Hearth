@@ -37,7 +37,7 @@ export function Transactions({ month, setMonth }: { month: string; setMonth: (m:
 
   return (
     <div className="stack screen">
-      <PageHead sub="Entered by hand until Kemba is connected" title="Transactions"><MonthPicker month={month} onChange={setMonth} /></PageHead>
+      <PageHead sub="From Kemba, plus anything you add by hand" title="Transactions"><MonthPicker month={month} onChange={setMonth} /></PageHead>
 
       <form className="card" onSubmit={add} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
         <label className="field">Date<input className="input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
@@ -51,18 +51,18 @@ export function Transactions({ month, setMonth }: { month: string; setMonth: (m:
         </label>
         <label className="small muted" style={{ display: 'flex', alignItems: 'center', gap: 6, height: 38 }}>
           <input type="checkbox" checked={form.income} onChange={(e) => setForm({ ...form, income: e.target.checked })} style={{ accentColor: 'var(--accent)' }} /> Money in
-          <Tip label="About money in" text="Tick this for refunds, deposits and anything that adds to your balance. Paychecks will come in automatically once Kemba is connected." />
+          <Tip label="About money in" text="Tick this for refunds, deposits and anything that adds to your balance. Paychecks come in automatically once Kemba is connected." />
         </label>
         <button className="btn primary" type="submit">Add</button>
         {err && <div className="notice warn" style={{ flexBasis: '100%' }}>{err}</div>}
       </form>
 
       <div className="card" style={{ padding: '8px 22px 12px' }}>
-        {txns.data && txns.data.length === 0 && <div className="muted" style={{ padding: '18px 0' }}>Nothing yet this month. Add a purchase above, or wait for Kemba in Phase 2.</div>}
+        {txns.data && txns.data.length === 0 && <div className="muted" style={{ padding: '18px 0' }}>Nothing yet this month. Connect Kemba under Accounts, or add a purchase above.</div>}
         {txns.data?.map((t) => (
           <div key={t.id} className="list-row" style={{ flexWrap: 'wrap' }}>
             <span className="muted" style={{ width: 56, fontSize: 13 }}>{new Date(t.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-            <span style={{ flex: '1 1 160px', fontWeight: 500 }}>{t.merchant}</span>
+            <span style={{ flex: '1 1 160px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge" title="Still pending at Kemba; the amount or date can change when it posts">Pending</span>}{t.source === 'rule' && <span className="pending-badge" title="Sorted automatically from a past choice or a matching bill. Change it if it's wrong and Hearth will remember.">Auto</span>}</span>
             <select className="input sm" style={{ flex: '1 1 200px', maxWidth: 280 }} value={t.category_id ?? ''} aria-label={`Category for ${t.merchant}`}
               onChange={(e) => api.patch(`/api/transactions/${t.id}`, { categoryId: e.target.value || null }).then(txns.reload)}>
               <option value="">Uncategorized</option>

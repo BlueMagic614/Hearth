@@ -26,9 +26,9 @@ export const api = {
 
 export interface Me { id: string; name: string; householdId: string; mustChangePassword: boolean }
 export interface BudgetView { month: string; income: number; plannedTotal: number; spentTotal: number; leftToAssign: number; tree: CategoryNode[] }
-export interface Txn { id: string; date: string; amount_cents: number; merchant: string; category_id: string | null; category_name: string | null; source: string; note: string | null }
+export interface Txn { id: string; date: string; amount_cents: number; merchant: string; category_id: string | null; category_name: string | null; source: string; note: string | null; pending?: boolean }
 export interface Forecast {
-  asOf: string; startBalance: number; cushion: number; dailySpend: number;
+  asOf: string; startBalance: number; fromBank?: boolean; cushion: number; dailySpend: number;
   points: { date: string; balance: number }[];
   firstBelow: { date: string; balance: number } | null;
   lowest: { date: string; balance: number } | null;
@@ -44,3 +44,8 @@ export interface PlanView {
   minimumsOnly: { doneLabel: string; totalInterest: number };
   incomeEvents: IncomeEvent[]; goals: Goal[];
 }
+
+export interface BankAccountView { id: string; name: string; type: string; subtype: string | null; mask: string | null; balance: number; available: number | null; institution: string | null; updatedAt: string; hidden: boolean }
+export interface ConnectionView { id: string; institution: string | null; environment: string; status: 'ok' | 'error' | 'login_required'; lastError: string | null; lastSyncedAt: string | null; createdAt: string; accounts: BankAccountView[] }
+export interface ConnectionsView { configured: boolean; keyReady: boolean; environment: 'sandbox' | 'production' | 'fake' | null; connections: ConnectionView[]; manualAccounts: BankAccountView[] }
+export interface SyncResult { added: number; modified: number; removed: number; categorized: number; learnedDates: number }

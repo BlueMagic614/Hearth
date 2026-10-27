@@ -23,7 +23,9 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
 
   return (
     <div className="stack screen">
-      <PageHead sub={new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} title={`${greeting}, ${name}`} />
+      <PageHead sub={new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} title={`${greeting}, ${name}`}>
+        <button className="btn sm" onClick={() => go('accounts')}>Accounts</button>
+      </PageHead>
 
       {forecast?.firstBelow && (
         <div className="notice warn" role="alert">
@@ -35,7 +37,7 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
 
       <div className="row-wrap">
         <div className="card grow">
-          <div className="stat-label">Spent this month <Tip label="About spent this month" text="Everything entered against a category this month. Kemba transactions will fill this in automatically from Phase 2." /></div>
+          <div className="stat-label">Spent this month <Tip label="About spent this month" text="Everything entered against a category this month. Kemba transactions fill this in automatically once connected under Accounts." /></div>
           <div className="stat-value">{b ? usd(b.spentTotal) : '—'}</div>
           <div className="stat-note">{b ? `of ${usd(b.plannedTotal)} planned` : ''}</div>
         </div>

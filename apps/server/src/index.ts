@@ -5,6 +5,8 @@ import fastifyStatic from '@fastify/static';
 import { buildApp } from './app';
 import { migrate, openDb } from './db';
 import { seedHousehold, syncStarterPassword } from './seed';
+import { bankFromEnv } from './bank';
+import { syncConnection } from './sync';
 
 const port = Number(process.env.PORT ?? 8787);
 const db = await openDb();
@@ -24,7 +26,9 @@ await seedHousehold(db, { devPassword: starterPassword });
 const synced = await syncStarterPassword(db, starterPassword);
 if (synced) console.log(`Starter password updated for ${synced} account(s) that haven't chosen their own yet.`);
 
-const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production' });
+const bank = bankFromEnv();
+console.log(bank ? `Bank sync: Plaid ${bank.environment}` : 'Bank sync: off (no Plaid keys)');
+const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production', bank });
 
 // In production the server also serves the built web app.
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');
@@ -38,6 +42,16 @@ if (existsSync(webDist)) {
 
 await app.listen({ port, host: '0.0.0.0' });
 console.log(`Hearth server on http://localhost:${port}`);
+
+// Plaid's webhook is the main signal; this catch-up sync covers any webhook that never arrived.
+if (bank) {
+  const catchUp = async () => {
+    const conns = await db.query<{ id: string }>("SELECT id FROM bank_connections WHERE status <> 'login_required' AND (last_synced_at IS NULL OR last_synced_at < now() - interval '5 hours')");
+    for (const c of conns) await syncConnection(db, bank, c.id).catch((e) => console.error('Catch-up sync failed:', (e as Error).message));
+  };
+  setInterval(() => void catchUp(), 60 * 60 * 1000).unref();
+  setTimeout(() => void catchUp(), 30_000).unref();
+}
 
 // Close the database cleanly so the local (PGlite) data files are always flushed.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

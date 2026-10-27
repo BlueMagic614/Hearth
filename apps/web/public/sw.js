@@ -1,5 +1,5 @@
 // Minimal offline shell: cache the app files; always go to the network for /api so money data is never stale.
-const CACHE = 'hearth-shell-v1';
+const CACHE = 'hearth-shell-v2';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', '/manifest.webmanifest', '/icon.svg'])));
   self.skipWaiting();
@@ -10,7 +10,8 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.pathname.startsWith('/api/')) return;
+  // Other sites (Plaid Link, fonts) are left to the browser.
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

@@ -212,7 +212,7 @@ export function ForecastCard({ f, onChange }: { f: Forecast | null; onChange: ()
       <div className="card">
         <div className="stat-label" style={{ marginBottom: 8 }}><h2 style={{ color: 'var(--ink)' }}>Will checking stay above water?</h2>
           <Tip label="About the forecast" text="Until Kemba is connected, enter today's Joint Checking balance. Hearth adds scheduled pay, subtracts bills and an everyday allowance, and warns you before the balance would drop below your cushion." /></div>
-        <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>Enter today's Joint Checking balance to see the next 45 days.</div>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 10 }}>Enter today's Joint Checking balance to see the next 45 days, or connect Kemba under Accounts and it fills in by itself.</div>
         <form style={{ display: 'flex', gap: 8 }} onSubmit={(e) => { e.preventDefault(); saveBal(); }}>
           <input className="input num" inputMode="decimal" placeholder="$ balance" value={bal} onChange={(e) => setBal(e.target.value)} aria-label="Checking balance" style={{ flex: 1 }} />
           <button className="btn primary" type="submit">Save</button>
@@ -231,7 +231,7 @@ export function ForecastCard({ f, onChange }: { f: Forecast | null; onChange: ()
       <div className="stat-label" style={{ marginBottom: 4 }}><h2 style={{ color: 'var(--ink)' }}>Checking forecast</h2>
         <Tip label="About the forecast" text="Projected end-of-day balance for 45 days: scheduled pay and bills plus an everyday allowance. It assumes bills come out at the earliest they usually do and pay arrives at the latest, so it shows the tightest it is likely to get." /></div>
       <div className="small muted" style={{ marginBottom: 12 }}>
-        From {usd(f.startBalance, true)} on {fmtDay(f.asOf)} · {usd(f.dailySpend)}/day everyday allowance · <button className="btn sm ghost" style={{ padding: 0, height: 'auto' }} onClick={() => setEditing(true)}>Update balance</button>
+        From {usd(f.startBalance, true)} {f.fromBank ? 'at Kemba' : ''} on {fmtDay(f.asOf)} · {usd(f.dailySpend)}/day everyday allowance{!f.fromBank && <> · <button className="btn sm ghost" style={{ padding: 0, height: 'auto' }} onClick={() => setEditing(true)}>Update balance</button></>}
       </div>
       <div style={{ position: 'relative', height: 110, display: 'flex', alignItems: 'flex-end', gap: 2 }} aria-label="Projected balance chart" role="img">
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: `${h(f.cushion)}%`, borderTop: '1.5px dashed var(--ink)', zIndex: 1 }} />

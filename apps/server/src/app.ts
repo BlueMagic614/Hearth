@@ -5,6 +5,9 @@ import { z } from 'zod';
 import { daysInMonth, parseCents, subtreeIds, wouldCycle, type ISODate, type YearMonth } from '@hearth/core';
 import type { Db } from './db';
 import { createSession, hashPassword, newId, userForSession, verifyPassword, type SessionUser } from './auth';
+import { HttpError, notFound } from './errors';
+import type { BankProvider } from './bank';
+import { registerBankRoutes } from './bank-routes';
 import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
 
 declare module 'fastify' {
@@ -17,10 +20,6 @@ const COOKIE = 'hearth_session';
 const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 const money = z.union([z.number(), z.string()]).transform((v) => parseCents(v));
 
-class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message); }
-}
-const notFound = () => new HttpError(404, 'Not found');
 
 /** The household lives in Ohio; the server runs in UTC. All "today" logic uses Eastern time. */
 export const HOUSEHOLD_TZ = process.env.HEARTH_TZ ?? 'America/New_York';
@@ -31,7 +30,7 @@ export function currentMonth(now = new Date()): YearMonth {
   return householdToday(now).slice(0, 7);
 }
 
-export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean } = {}): Promise<FastifyInstance> {
+export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
   await app.register(cors, { origin: opts.webOrigin ?? true, credentials: true });
@@ -39,12 +38,13 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof HttpError) return reply.status(err.status).send({ error: err.message });
     if (err instanceof z.ZodError) return reply.status(400).send({ error: 'Invalid input', issues: err.issues });
+    console.error(err);
     reply.status(500).send({ error: 'Something went wrong' });
   });
 
   // Every /api route except auth requires a signed-in household member.
   app.addHook('preHandler', async (req) => {
-    if (!req.url.startsWith('/api/') || req.url.startsWith('/api/auth/') || req.url === '/api/health') return;
+    if (!req.url.startsWith('/api/') || req.url.startsWith('/api/auth/') || req.url === '/api/health' || req.url === '/api/plaid/webhook') return;
     const user = await userForSession(db, req.cookies[COOKIE]);
     if (!user) throw new HttpError(401, 'Sign in required');
     req.user = user;
@@ -394,6 +394,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     await db.query('DELETE FROM income_events WHERE id = $1 AND household_id = $2', [id, hid(req)]);
     return { ok: true };
   });
+
+  await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs });
 
   return app;
 }

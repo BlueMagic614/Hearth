@@ -77,19 +77,22 @@ export async function putSetting(db: Db, hid: string, key: string, value: unknow
  * Returns null until a checking balance is known (manual now, Kemba from Phase 2).
  */
 export async function forecastView(db: Db, hid: string, today: ISODate, days = 45) {
-  const acct = (await db.query<{ balance_cents: number; updated_at: Date | string }>(
-    "SELECT balance_cents, updated_at FROM accounts WHERE household_id = $1 AND type = 'checking' ORDER BY updated_at DESC LIMIT 1", [hid]))[0];
-  if (!acct) return null;
-  const asOf = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(acct.updated_at));
+  // All visible checking accounts together (Kemba may report more than one); a hand-entered balance until Kemba is linked.
+  const acct = (await db.query<{ balance_cents: unknown; updated_at: Date | string | null; from_bank: boolean | null }>(
+    `SELECT SUM(balance_cents) AS balance_cents, MAX(updated_at) AS updated_at, bool_or(connection_id IS NOT NULL) AS from_bank
+     FROM accounts WHERE household_id = $1 AND type = 'checking' AND NOT hidden`, [hid]))[0];
+  if (!acct || acct.updated_at === null) return null;
+  const startBalance = Number(acct.balance_cents);
+  const asOf = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(acct.updated_at as Date | string));
   const month = today.slice(0, 7) as YearMonth;
   const [schedules, overrides, rows] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid), categoryRows(db, hid, month)]);
   const events = [month, addMonths(month, 1), addMonths(month, 2)].flatMap((m) => eventsForMonth(schedules, m, overrides));
   const everyday = leaves(buildTree(rows)).filter((n) => n.kind === 'everyday').reduce((s, n) => s + n.planned, 0);
   const dailySpend = Math.round(everyday / 30);
   const cushion = await getSetting<number>(db, hid, 'balance_cushion_cents', 100000);
-  const points = projectBalance(acct.balance_cents, today, days, events, dailySpend, { cautious: true });
+  const points = projectBalance(startBalance, today, days, events, dailySpend, { cautious: true });
   const low = lowBalance(points, cushion);
-  return { asOf, startBalance: acct.balance_cents, cushion, dailySpend, points, ...low };
+  return { asOf, startBalance, fromBank: !!acct.from_bank, cushion, dailySpend, points, ...low };
 }
 
 export async function calendarView(db: Db, hid: string, month: YearMonth, today: ISODate) {

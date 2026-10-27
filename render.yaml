@@ -23,6 +23,14 @@ services:
       # Find it in Render → hearth → Environment.
       - key: HEARTH_INITIAL_PASSWORD
         generateValue: true
+      # Encrypts bank access tokens stored in the database. Never share or change it (changing it means reconnecting Kemba).
+      - key: HEARTH_ENCRYPTION_KEY
+        generateValue: true
+      # Plaid keys are entered by hand in Render → hearth → Environment (never in this file).
+      - key: PLAID_CLIENT_ID
+        sync: false
+      - key: PLAID_SECRET_SANDBOX
+        sync: false
 
 databases:
   - name: hearth-db
