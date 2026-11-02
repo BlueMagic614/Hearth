@@ -12,10 +12,13 @@ export function parseCents(input: string | number): Cents {
   return Number.isFinite(n) ? toCents(n) : 0;
 }
 
-/** Formats cents as US dollars. Negative values use a true minus sign. */
+/**
+ * Formats cents as US dollars. Negative values use a true minus sign.
+ * Whole-dollar display always rounds up (away from zero): $3.23 shows as $4, so nothing looks smaller than it is.
+ */
 export function formatUSD(c: Cents, opts: { cents?: boolean } = {}): string {
   const showCents = opts.cents ?? c % 100 !== 0;
-  const abs = Math.abs(c) / 100;
+  const abs = showCents ? Math.abs(c) / 100 : Math.ceil(Math.abs(c) / 100);
   const body = abs.toLocaleString('en-US', {
     minimumFractionDigits: showCents ? 2 : 0,
     maximumFractionDigits: showCents ? 2 : 0,

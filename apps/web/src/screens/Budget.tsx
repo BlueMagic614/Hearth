@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
-import { api, type BudgetView } from '../api';
+import { api, type BudgetView, type Txn } from '../api';
+import { CategoryDonut } from '../components/CategoryDonut';
 import { SpendingSuggestions } from '../components/SpendingSuggestions';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
 
 interface Props { month: string; setMonth: (m: string) => void; onBreakdown: (parentId: string) => void }
 
 export function Budget({ month, setMonth, onBreakdown }: Props) {
-  const { data, error, reload } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}`), [month]);
+  const { data, error, reload: reloadBudget } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}`), [month]);
+  const txns = useLoad(() => api.get<Txn[]>(`/api/transactions?month=${month}`), [month]);
+  const reload = () => { reloadBudget(); txns.reload(); };
+  const [open, setOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -126,6 +130,80 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
     return find(tops)?.name ?? '';
   };
 
+  // Whole dollars, always rounded up ($3.23 shows as $4). Parents add up their children's rounded amounts,
+  // so every column adds up on screen. Exact cents stay in the data and in the transaction list.
+  const up = (c: number) => Math.sign(c) * Math.ceil(Math.abs(c) / 100) * 100;
+  const rp = (n: CategoryNode): number => (n.children.length ? n.children.reduce((a, c) => a + rp(c), 0) : up(n.planned));
+  const rs = (n: CategoryNode): number => (n.children.length ? n.children.reduce((a, c) => a + rs(c), up(n.spent)) : up(n.spent));
+  const subtree = (n: CategoryNode): string[] => [n.id, ...n.children.flatMap(subtree)];
+  const parentsList: { id: string; label: string; ids: Set<string> }[] = [];
+  const collect = (ns: CategoryNode[], prefix: string) => ns.forEach((x) => {
+    if (x.children.length || !prefix) parentsList.push({ id: x.id, label: prefix + x.name, ids: new Set(subtree(x)) });
+    collect(x.children, prefix + x.name + ' › ');
+  });
+  collect(tops, '');
+  const day = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  const toggleOpen = (n: CategoryNode) => { if (!editing) setOpen((o) => (o === n.id ? null : n.id)); };
+  const rowKey = (e: React.KeyboardEvent, n: CategoryNode) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); toggleOpen(n); }
+  };
+
+  /** The slide-out under a row: this month's transactions, editing, and for parents the split chart. */
+  const panel = (n: CategoryNode, isTop: boolean, indent: number) => {
+    if (open !== n.id || editing) return null;
+    const ids = new Set(subtree(n));
+    const list = (txns.data ?? []).filter((t) => t.category_id && ids.has(t.category_id));
+    const total = list.reduce((a, t) => a - t.amount_cents, 0);
+    const isLeaf = n.children.length === 0;
+    const moveTo = parentsList.filter((p) => !p.ids.has(n.id) && p.id !== n.id);
+    return (
+      <div className="bpanel" style={{ marginLeft: indent }} onClick={(e) => e.stopPropagation()}>
+        <div className="bpanel-actions">
+          {isLeaf && (
+            <label className="small muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>Planned
+              <input className="input sm num" style={{ width: 100 }} inputMode="decimal" aria-label={`Planned for ${n.name}`}
+                defaultValue={(n.planned / 100).toFixed(2)} key={`${n.id}-${n.planned}`}
+                onBlur={(e) => { if (parseCents(e.target.value) !== n.planned) setPlanned(n.id, e.target.value); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
+            </label>
+          )}
+          <button className="btn sm" onClick={() => setRenaming({ id: n.id, value: n.name })}>{Icon.pencil} Rename</button>
+          {isLeaf
+            ? <button className="btn sm" onClick={() => run(async () => { await api.post(`/api/categories/${n.id}/split`, { month }); setAdding({ parentId: n.id, name: '', amount: '' }); })}>{Icon.split} Split into subcategories</button>
+            : <button className="btn sm" onClick={() => setAdding({ parentId: n.id, name: '', amount: '' })}>{Icon.plus} Add category</button>}
+          {!isTop && moveTo.length > 0 && (
+            <select className="input sm" value="" aria-label={`Move ${n.name}`} style={{ width: 'auto' }}
+              onChange={(e) => e.target.value && run(() => api.post(`/api/categories/${n.id}/move`, { targetId: e.target.value, position: 'inside', month }))}>
+              <option value="">Move to…</option>
+              {moveTo.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          )}
+          <button className="btn sm ghost danger-text" onClick={() => (n.children.length ? setConfirming(n.id) : remove(n, 'all'))}>{Icon.trash} Delete</button>
+        </div>
+
+        {!isLeaf && (
+          <CategoryDonut total={{ planned: rp(n), spent: rs(n) }}
+            slices={n.children.map((c) => ({ id: c.id, name: c.name, planned: rp(c), spent: rs(c) }))} />
+        )}
+
+        <div className="bpanel-txns">
+          <div className="small muted" style={{ marginBottom: 4 }}>
+            {list.length ? `${list.length} transaction${list.length === 1 ? '' : 's'} in ${new Date(month + '-15').toLocaleDateString('en-US', { month: 'long' })} · ${usd(total, true)}` : `Nothing paid from ${n.name} yet this month.`}
+          </div>
+          {list.map((t) => (
+            <div key={t.id} className="bpanel-txn">
+              <span className="muted" style={{ width: 52 }}>{day(t.date)}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}
+                {!isLeaf && <span className="muted small"> · {t.category_name}</span>}</span>
+              <span className={t.amount_cents > 0 ? 'good' : undefined} style={{ fontWeight: 500 }}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   const nameCell = (n: CategoryNode, size: number, weight: number) =>
     renaming?.id === n.id ? (
       <input className="input sm" autoFocus value={renaming.value} aria-label="Category name" style={{ width: 220, fontWeight: weight }}
@@ -142,7 +220,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
         onBlur={(e) => { if (parseCents(e.target.value) !== n.planned) setPlanned(n.id, e.target.value); }}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
     ) : (
-      <span style={{ fontWeight: strong ? 600 : 400, color: 'var(--ink-2)' }}>{usd(n.totalPlanned)}</span>
+      <span style={{ fontWeight: strong ? 600 : 400, color: 'var(--ink-2)' }}>{usd(rp(n))}</span>
     );
 
   const actions = (n: CategoryNode, isTop: boolean) =>
@@ -193,7 +271,9 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
   const renderNode = (n: CategoryNode, depth: number, isTop: boolean) => (
     <div key={n.id} className={isTop ? 'bparent' : undefined}>
-      <div className={rowClass(n)} data-cat-id={editing ? n.id : undefined} style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}>
+      <div className={rowClass(n) + (editing ? '' : ' clickable') + (open === n.id ? ' is-open' : '')} data-cat-id={editing ? n.id : undefined} style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}
+        onClick={(e) => { if (!(e.target as HTMLElement).closest('button, input, select, a')) toggleOpen(n); }}
+        {...(editing ? {} : { role: 'button', tabIndex: 0, 'aria-expanded': open === n.id, onKeyDown: (e: React.KeyboardEvent) => rowKey(e, n) })}>
         {editing && (
           <button type="button" className="grip" aria-label={`Drag ${n.name}`} title="Drag to move" onPointerDown={(e) => startDrag(e, n)}>
             <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="3" r="1.5" /><circle cx="9" cy="3" r="1.5" /><circle cx="3" cy="8" r="1.5" /><circle cx="9" cy="8" r="1.5" /><circle cx="3" cy="13" r="1.5" /><circle cx="9" cy="13" r="1.5" /></svg>
@@ -211,10 +291,11 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
           {!isTop && <div style={{ maxWidth: 260, marginTop: 7 }}><Bar spent={n.totalSpent} planned={n.totalPlanned} /></div>}
         </div>
         <span className="c-planned">{plannedCell(n, isTop)}</span>
-        <span className="c-spent">{usd(n.totalSpent)}</span>
-        <span className="c-left" style={{ fontWeight: isTop ? 600 : 500 }}><Remaining planned={n.totalPlanned} spent={n.totalSpent} /></span>
+        <span className="c-spent">{usd(rs(n))}</span>
+        <span className="c-left" style={{ fontWeight: isTop ? 600 : 500 }}><Remaining planned={rp(n)} spent={rs(n)} /></span>
         {actions(n, isTop)}
       </div>
+      {panel(n, isTop, isTop ? 0 : 14 + (depth - 1) * 24)}
       {confirmBox(n, isTop ? 34 : 54)}
       {n.children.map((c) => renderNode(c, depth + 1, false))}
       {addForm(n.id, isTop ? 40 : 60)}
@@ -243,14 +324,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
       </div>
 
       <div className="card" style={{ padding: '8px 22px 16px' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--line)' }}>
+        <div className="btoolbar">
           <div className="stat-label" style={{ flex: '1 1 260px' }}>
-            {editing ? 'Drag ⠿ to move: drop onto a category to put it inside, or between rows to reorder.' : 'Tap Edit categories to add, delete, move, split or regroup.'}
+            {editing ? 'Drag ⠿ to move: drop onto a category to put it inside, or between rows to reorder.' : 'Click any row to see its transactions and edit it. Rearrange lets you drag categories and move several at once.'}
             <Tip label="About parent categories" text="Parents hold categories, and any category can be split into subcategories. Totals roll up. Moving a category keeps all of its transactions." />
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {editing && <button className="btn" onClick={() => run(async () => { const r = await api.post<{ id: string }>('/api/categories', { name: 'New category', parentId: null, month }); setRenaming({ id: r.id, value: 'New category' }); })}>+ New parent category</button>}
-            <button className="btn primary" onClick={() => { commitRename(); setEditing(!editing); setSelected(new Set()); setAdding(null); setConfirming(null); }}>{editing ? 'Done' : 'Edit categories'}</button>
+            <button className="btn primary" onClick={() => { commitRename(); setEditing(!editing); setSelected(new Set()); setAdding(null); setConfirming(null); }}>{editing ? 'Done' : 'Rearrange'}</button>
           </div>
         </div>
 
