@@ -97,3 +97,23 @@ describe('letting Hearth decide', () => {
     expect(Object.keys(after.payers).length).toBeGreaterThan(0);
   });
 });
+
+describe('the half we are in uses the real balance', () => {
+  it('starts from Kemba checking, subtracts what is still due, and carries the real result forward', async () => {
+    const { paycheckPlan } = await import('../src/paychecks');
+    const hid = (await db.query<{ id: string }>('SELECT id FROM households'))[0]!.id;
+    await api('PUT', '/api/accounts/checking', { balance: 612 });
+    const p = await paycheckPlan(db, hid, '2026-11', { today: '2026-11-02' });
+    const h = p.halves[0]!;
+    expect(h.actual).toBeTruthy();
+    const a = h.actual!;
+    expect(a.balance).toBe(61200);
+    expect(a.checksToCome).toBe(0); // Jason's Oct 30 check is already in
+    // Rent (Nov 1) is behind us; the lunch accounts (Nov 2), Spectrum Internet (Nov 5) and Mohela (Nov 8) are still due.
+    expect(a.items.some((i) => i.name === 'Rent')).toBe(false);
+    expect(a.items.filter((i) => i.kind === 'bill').map((i) => i.name)).toEqual(expect.arrayContaining(['Student lunch accounts', 'Spectrum Internet & TV', 'Mohela']));
+    expect(a.end).toBe(a.balance - a.stillDue);
+    expect(h.end).toBe(a.end);
+    expect(p.halves[1]!.carryIn).toBe(Math.max(0, a.end));
+  });
+});

@@ -1,6 +1,7 @@
 import { addDays, addMonths, daysInMonth, eventsForMonth, type ISODate, type Schedule, type ScheduledEvent, type YearMonth } from '@hearth/core';
 import type { Db } from './db';
 import { categoryRows, overridesFor, schedulesFor } from './services';
+import { householdToday } from './time';
 
 /**
  * The Paycheck Plan, in halves of the month. Paydays pair up in order of day of the month (Renee's 10th with
@@ -31,6 +32,11 @@ export interface Half {
   outflow: number;
   /** Money left when the next half starts (can be negative). */
   end: number;
+  /**
+   * For the half we're in: the real picture from the Kemba checking balance instead of the plan's assumptions.
+   * end = balance − still due + checks still to come in this half.
+   */
+  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null;
 }
 
 const ym = (d: string) => d.slice(0, 7) as YearMonth;
@@ -38,7 +44,7 @@ const ym = (d: string) => d.slice(0, 7) as YearMonth;
 /**
  * opts.without drops schedules and opts.virtual adds pretend ones, so placements can be tried without saving them.
  */
-export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: { without?: Set<string>; virtual?: Schedule[]; cache?: Map<string, unknown> } = {}) {
+export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: { without?: Set<string>; virtual?: Schedule[]; cache?: Map<string, unknown>; today?: ISODate } = {}) {
   const [all, overrides] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid)]);
   const schedules = [...all.filter((s) => !opts.without?.has(s.id)), ...(opts.virtual ?? [])];
   const months = [addMonths(month, -1), month, addMonths(month, 1), addMonths(month, 2)];
@@ -122,7 +128,47 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
       carryIn: 0, income: a.amount + (b?.amount ?? 0), outflow: step1.outflow + (step2?.outflow ?? 0), end: 0 });
   }
   halves.sort((x, y) => x.first.payDate.localeCompare(y.first.payDate));
-  // Carry leftovers forward from the start of last month (as if it went to plan), then show this month's halves.
+  // The half we're in starts from the real checking balance, not from what last month was supposed to leave.
+  const today = opts.today ?? householdToday();
+  const acct = (await db.query<{ balance: unknown; updated: Date | null }>(
+    "SELECT SUM(balance_cents) AS balance, MAX(updated_at) AS updated FROM accounts WHERE household_id = $1 AND type = 'checking' AND NOT hidden", [hid]))[0];
+  const live = acct?.updated ? halves.find((h) => today >= h.first.payDate && today <= h.to) : undefined;
+  if (live && !opts.virtual?.length) {
+    // Bills already paid this half (a linked payment since it began) aren't still due.
+    const paid = new Set((await db.query<{ schedule_id: string }>(
+      "SELECT DISTINCT schedule_id FROM transactions WHERE household_id = $1 AND schedule_id IS NOT NULL AND date >= $2 AND date <= $3", [hid, live.first.payDate, today])).map((r) => r.schedule_id));
+    const remaining: PlanItem[] = [];
+    // Cash already pulled this month doesn't need pulling again: what's still to withdraw caps the cash still due.
+    const filledBy = new Map((await db.query<{ month: string; s: unknown }>(
+      "SELECT month, SUM(amount_cents) AS s FROM cash_fills WHERE household_id = $1 AND kind = 'fill' GROUP BY month", [hid])).map((r) => [r.month, Number(r.s)]));
+    const cashLeftIn = new Map<string, number>();
+    for (const m of months) cashLeftIn.set(m, Math.max(0, Math.round((perDay.get(m)?.cash ?? 0) * daysInMonth(m)) - (filledBy.get(m) ?? 0)));
+    for (const st of [live.step1, ...(live.step2 ? [live.step2] : [])]) {
+      const days = Math.round((Date.parse(st.to) - Date.parse(st.from)) / 86400_000) + 1;
+      const left = Math.max(0, Math.round((Date.parse(st.to) - Date.parse(today > st.from ? today : st.from)) / 86400_000) + 1);
+      for (const i of st.items) {
+        if (i.kind === 'cash' || i.kind === 'card') {
+          // Cash and card spending for the days still ahead (cash only as far as it hasn't been pulled yet).
+          let part = Math.round((i.amount * Math.min(days, left)) / days / 100) * 100;
+          if (i.kind === 'cash') {
+            const m = ym(today > st.from ? today : st.from);
+            part = Math.min(part, cashLeftIn.get(m) ?? part);
+            cashLeftIn.set(m, (cashLeftIn.get(m) ?? 0) - part);
+          }
+          if (part > 0) remaining.push({ ...i, amount: part, name: i.kind === 'cash' ? `Cash still to pull, ${Math.min(days, left)} days` : `${i.name}, ${Math.min(days, left)} days` });
+        } else if (i.date >= today && !paid.has(i.scheduleId)) remaining.push(i);
+      }
+    }
+    const balance = Number(acct!.balance);
+    const stillDue = remaining.reduce((t, i) => t + i.amount, 0);
+    const checksToCome = live.second && live.second.payDate > today ? live.second.amount : 0;
+    live.actual = {
+      asOf: new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York' }).format(new Date(acct!.updated as Date)),
+      balance, stillDue, checksToCome, end: balance - stillDue + checksToCome, items: remaining.sort((a, b) => a.date.localeCompare(b.date)),
+    };
+  }
+
+  // Carry leftovers forward: from the real end of the current half when we have it, otherwise as if each half went to plan.
   let carry = 0;
   for (const h of halves) {
     h.carryIn = carry;
@@ -131,6 +177,7 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
       h.step2.leaves = h.step2.pool - h.step2.outflow;
       h.end = h.step2.leaves;
     } else h.end = h.step1.leaves + h.carryIn;
+    if (h.actual) h.end = h.actual.end;
     carry = Math.max(0, h.end);
   }
   const shown = halves.filter((h) => h.to >= `${month}-01`);

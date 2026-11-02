@@ -48,11 +48,11 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
         const t = todayISO();
         const fmtD = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         const steps = [h.step1, ...(h.step2 ? [h.step2] : [])];
-        const due = steps.flatMap((x) => x.items).filter((i) => (i.kind === 'bill' || i.kind === 'save') && i.date >= t).reduce((s, i) => s + i.amount, 0);
+        const due = h.actual ? h.actual.stillDue : steps.flatMap((x) => x.items).filter((i) => (i.kind === 'bill' || i.kind === 'save') && i.date >= t).reduce((s, i) => s + i.amount, 0);
         const money = step === 1 || !h.second ? `${h.first.person}'s ${fmtD(h.first.payDate)} check` : `${h.first.person}'s and ${h.second.person}'s checks`;
         return (
           <div className={'notice ' + (h.end < 0 ? 'warn' : 'good')}>
-            <span><b>Living on {money}</b> until {fmtD(step === 1 && h.second ? h.second.payDate : h.to)}{step === 1 && h.second ? `, then ${h.second.person}'s check joins it until ${fmtD(h.to)}` : ''}. {due > 0 ? `${usd(due)} in bills still due this half. ` : ''}
+            <span><b>Living on {money}</b> until {fmtD(step === 1 && h.second ? h.second.payDate : h.to)}{step === 1 && h.second ? `, then ${h.second.person}'s check joins it until ${fmtD(h.to)}` : ''}. {due > 0 ? `${usd(due)} still due this half${h.actual ? `, with ${usd(h.actual.balance)} in checking` : ''}. ` : ''}
               {h.end < 0 ? `This half is short ${usd(-h.end)}.` : `Planned to have ${usd(h.end)} left on ${fmtD(h.to)}.`}</span>
             <button className="btn sm" onClick={() => { try { localStorage.setItem('hearth.calendar.view', 'paychecks'); } catch { /* */ } go('calendar'); }}>Paycheck plan</button>
           </div>

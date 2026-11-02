@@ -5,7 +5,8 @@ import { Tip, todayISO, usd, useLoad } from './ui';
 export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean }
 interface Check { person: string; payDate: string; amount: number }
 interface Step { from: string; to: string; items: PlanItem[]; outflow: number; leaves: number }
-export interface Half { id: string; from: string; to: string; first: Check; second: Check | null; step1: Step; step2: (Step & { pool: number }) | null; carryIn: number; income: number; outflow: number; end: number }
+export interface Half { id: string; from: string; to: string; first: Check; second: Check | null; step1: Step; step2: (Step & { pool: number }) | null; carryIn: number; income: number; outflow: number; end: number;
+  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null }
 export interface PaycheckView {
   month: string; halves: Half[]; payers: Record<string, string>;
   unscheduled: { categoryId: string; name: string; amount: number; kind: string | null }[];
@@ -88,10 +89,25 @@ export function PaycheckPlan({ month }: { month: string }) {
                 <div className="small muted">{a.person} {usd(a.amount)} on {wk(a.payDate)}{b ? ` + ${b.person} ${usd(b.amount)} on ${wk(b.payDate)}` : ''} = {usd(h.income)}</div>
               </div>
               <div className={'half-end ' + (h.end >= 0 ? 'good' : 'bad')}>
-                <span className="small">{h.end >= 0 ? `Left on ${fmt(h.to)}` : `Short by ${fmt(h.to)}`}</span>
+                <span className="small">{h.end >= 0 ? `Left on ${fmt(h.to)}` : `Short by ${fmt(h.to)}`}{h.actual ? ' (real)' : ''}</span>
                 <b>{usd(Math.abs(h.end))}</b>
               </div>
             </header>
+
+            {h.actual && (
+              <div className={'reality ' + (h.actual.end >= 0 ? 'ok' : 'bad')}>
+                <div className="reality-title">Right now, from Kemba <span className="muted small">(balance as of {fmt(h.actual.asOf)})</span>
+                  <Tip label="About right now" text="The half you're in starts from your real checking balance, not from what last month was supposed to leave over. Bills already paid this half are left out; cash and card spending count only for the days still ahead." />
+                </div>
+                <Line label="In checking now" value={signed(h.actual.balance)} />
+                <Line label={`Still due before ${fmt(h.to)}`} value={`−${usd(h.actual.stillDue)}`} kind="minus" />
+                {h.actual.checksToCome > 0 && h.second && <Line label={`+ ${h.second.person}'s check on ${fmt(h.second.payDate)}`} value={usd(h.actual.checksToCome)} />}
+                <Line label={`Left on ${fmt(h.to)}`} value={signed(h.actual.end)} kind={h.actual.end >= 0 ? 'good' : 'bad'} />
+                {h.actual.end < 0 && <div className="notice warn small">That's {usd(-h.actual.end)} short before {fmt(h.to)}. Hold off on a cash withdrawal or move a bill past {fmt(h.to)} if you can.</div>}
+                {h.actual.end >= 0 && h.actual.end < 10000 && <div className="small muted">Tight, but it works. Keep spending to what's listed until {fmt(h.to)}.</div>}
+                <Items items={h.actual.items} today={today} />
+              </div>
+            )}
 
             <div className="half-steps">
               <div className={'step' + (live && now?.step === 1 ? ' here' : '')}>

@@ -1,5 +1,5 @@
 import {
-  addDays, addMonths, buildTree, eventsForMonth, leaves, lowBalance, monthLabel, parseYM, projectBalance, simulatePayoff,
+  addDays, addMonths, buildTree, daysInMonth, eventsForMonth, leaves, lowBalance, monthLabel, parseYM, projectBalance, simulatePayoff,
   type CategoryRow, type DateSource, type ISODate, type Lump, type Raise, type Schedule, type ScheduleOverride, type ScheduledEvent, type Strategy, type YearMonth,
 } from '@hearth/core';
 import type { Db } from './db';
@@ -145,8 +145,15 @@ export async function forecastView(db: Db, hid: string, today: ISODate, days = 4
     const need = cashLeaves.reduce((s, n) => s + Math.max(0, n.planned - (filled.get(n.id) ?? 0)), 0);
     const plan = cashLeaves.reduce((s, n) => s + n.planned, 0);
     const cashEvent = (date: ISODate, amount: number): ScheduledEvent => ({ scheduleId: 'cash', originalDate: date, date, name: 'Cash for envelopes', kind: 'bill', amount: -amount, variable: false, source: 'manual', windowDays: 0 });
-    if (need > 0) events.push(cashEvent(addDays(today, 1), need));
-    for (const m of [addMonths(month, 1), addMonths(month, 2)]) if (plan > 0) events.push(cashEvent(`${m}-01` as ISODate, plan));
+    // Spread over the days it's needed (withdrawals follow paydays through the month), not all at once:
+    // what's still to pull this month over the days left, then each later month's plan day by day.
+    const daysLeft = Math.max(1, daysInMonth(month) - Number(today.slice(8, 10)));
+    for (let k = 1; k <= days; k++) {
+      const d = addDays(today, k);
+      const m = d.slice(0, 7) as YearMonth;
+      const amt = m === month ? need / daysLeft : plan / daysInMonth(m);
+      if (amt > 0) events.push(cashEvent(d, Math.round(amt)));
+    }
   }
   const cushion = await getSetting<number>(db, hid, 'balance_cushion_cents', 100000);
   const points = projectBalance(startBalance, today, days, events, dailySpend, { cautious: true });
