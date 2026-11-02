@@ -47,6 +47,8 @@ export interface BankProvider {
   getAccounts(accessToken: string): Promise<BankAccount[]>;
   syncTransactions(accessToken: string, cursor: string | null): Promise<SyncPage>;
   refresh(accessToken: string): Promise<void>;
+  /** When the bank last delivered new transactions to the provider, if known. */
+  getStatus?(accessToken: string): Promise<{ lastUpdate: string | null }>;
   removeItem(accessToken: string): Promise<void>;
   /** Verifies the Plaid-Verification JWT on a webhook against the raw request body. */
   verifyWebhook(rawBody: string, jwt: string | undefined): Promise<boolean>;
@@ -121,6 +123,12 @@ export class PlaidProvider implements BankProvider {
       nextCursor: r.data.next_cursor,
       hasMore: r.data.has_more,
     };
+  }
+
+  async getStatus(accessToken: string) {
+    const r = await this.api.itemGet({ access_token: accessToken });
+    const s = r.data.status as { transactions?: { last_successful_update?: string | null } } | null | undefined;
+    return { lastUpdate: s?.transactions?.last_successful_update ?? null };
   }
 
   async refresh(accessToken: string) {

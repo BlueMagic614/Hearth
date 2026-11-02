@@ -44,6 +44,10 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
       // A real Kemba checking balance replaces the one typed in by hand.
       await db.query("DELETE FROM accounts WHERE household_id = $1 AND connection_id IS NULL AND type = 'checking'", [hid]);
     }
+    if (bank.getStatus) {
+      const st = await bank.getStatus(token).catch(() => null);
+      if (st?.lastUpdate) await db.query('UPDATE bank_connections SET bank_updated_at = $1 WHERE id = $2', [st.lastUpdate, conn.id]);
+    }
     const acctIds = new Map((await db.query<{ id: string; external_id: string }>('SELECT id, external_id FROM accounts WHERE connection_id = $1', [conn.id])).map((r) => [r.external_id, r.id]));
 
     // 2. Transactions, page by page

@@ -8,13 +8,13 @@ import { HttpError, notFound } from './errors';
 import { syncConnection } from './sync';
 import type { PayeeClassifier } from './agent';
 
-interface Opts { bank: BankProvider | null; hid: (req: FastifyRequest) => string; webhookDelayMs?: number; classifier?: PayeeClassifier | null }
+interface Opts { bank: BankProvider | null; hid: (req: FastifyRequest) => string; webhookDelayMs?: number; classifier?: PayeeClassifier | null; followUps?: number[] }
 
 /**
  * Kemba via Plaid: link token → Plaid Link in the browser → public token exchanged here for an access token
  * (encrypted at rest) → sync. Plaid then calls the webhook whenever new transactions are ready.
  */
-export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, hid, webhookDelayMs = 2000, classifier = null }: Opts) {
+export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, hid, webhookDelayMs = 2000, classifier = null, followUps = [45_000, 120_000, 300_000] }: Opts) {
   const need = () => {
     if (!bank) throw new HttpError(503, "Bank connection isn't set up on the server yet (Plaid keys missing).");
     return bank;
@@ -73,8 +73,8 @@ export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, h
   });
 
   app.get('/api/connections', async (req) => {
-    const conns = await db.query<{ id: string; institution_name: string | null; environment: string; status: string; last_error: string | null; last_synced_at: Date | null; created_at: Date }>(
-      'SELECT id, institution_name, environment, status, last_error, last_synced_at, created_at FROM bank_connections WHERE household_id = $1 ORDER BY created_at', [hid(req)]);
+    const conns = await db.query<{ id: string; institution_name: string | null; environment: string; status: string; last_error: string | null; last_synced_at: Date | null; created_at: Date; bank_updated_at: Date | null; last_refresh_requested_at: Date | null }>(
+      'SELECT id, institution_name, environment, status, last_error, last_synced_at, created_at, bank_updated_at, last_refresh_requested_at FROM bank_connections WHERE household_id = $1 ORDER BY created_at', [hid(req)]);
     const accounts = await db.query<{ id: string; connection_id: string | null; name: string; type: string; subtype: string | null; mask: string | null; balance_cents: number; available_cents: number | null; institution: string | null; updated_at: Date; hidden: boolean }>(
       'SELECT id, connection_id, name, type, subtype, mask, balance_cents, available_cents, institution, updated_at, hidden FROM accounts WHERE household_id = $1 ORDER BY type, name', [hid(req)]);
     const shape = (a: (typeof accounts)[number]) => ({
@@ -87,7 +87,7 @@ export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, h
       environment: bank?.environment ?? null,
       connections: conns.map((c) => ({
         id: c.id, institution: c.institution_name, environment: c.environment, status: c.status, lastError: c.last_error,
-        lastSyncedAt: c.last_synced_at, createdAt: c.created_at, accounts: accounts.filter((a) => a.connection_id === c.id).map(shape),
+        lastSyncedAt: c.last_synced_at, createdAt: c.created_at, bankUpdatedAt: c.bank_updated_at, refreshRequestedAt: c.last_refresh_requested_at, accounts: accounts.filter((a) => a.connection_id === c.id).map(shape),
       })),
       manualAccounts: accounts.filter((a) => !a.connection_id).map(shape),
     };
@@ -97,13 +97,18 @@ export async function registerBankRoutes(app: FastifyInstance, db: Db, { bank, h
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const conn = await ownConnection(req, id);
     const b = need();
+    let refreshRequested = false;
     if (process.env.PLAID_ALLOW_REFRESH === 'true') {
       // On-demand refresh asks Kemba for brand-new activity; Plaid bills it separately, so it's opt-in.
-      await b.refresh(decrypt(conn.access_token_enc)).catch(() => {});
-      await db.query('UPDATE bank_connections SET last_refresh_requested_at = now() WHERE id = $1', [id]);
+      // Kemba answers in the background, so besides Plaid's webhook, check back a few times over the next minutes.
+      refreshRequested = await b.refresh(decrypt(conn.access_token_enc)).then(() => true, () => false);
+      if (refreshRequested) {
+        await db.query('UPDATE bank_connections SET last_refresh_requested_at = now() WHERE id = $1', [id]);
+        for (const ms of followUps) setTimeout(() => { runSync(id).catch(() => {}); }, ms).unref();
+      }
     }
     try {
-      return { ok: true, result: await runSync(id) };
+      return { ok: true, refreshRequested, result: await runSync(id) };
     } catch (e) {
       throw new HttpError(502, `Sync didn't finish: ${(e as { response?: { data?: { error_message?: string } } }).response?.data?.error_message ?? (e as Error).message}`);
     }

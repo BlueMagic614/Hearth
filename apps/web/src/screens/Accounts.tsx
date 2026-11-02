@@ -87,8 +87,12 @@ export function Accounts() {
     setErr(null);
     setBusy(c.id);
     try {
-      const r = await api.post<{ result: SyncResult }>(`/api/connections/${c.id}/sync`);
-      setToast(summary(r.result));
+      const r = await api.post<{ result: SyncResult; refreshRequested?: boolean }>(`/api/connections/${c.id}/sync`);
+      if (r.refreshRequested) {
+        // Kemba answers a refresh in the background; Hearth keeps checking and this page updates itself.
+        setToast(`${summary(r.result)} Also asked Kemba for brand-new activity: it usually arrives within a few minutes and Hearth adds it automatically.`);
+        for (const ms of [50_000, 130_000, 310_000]) setTimeout(() => data.reload(), ms);
+      } else setToast(summary(r.result));
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(null); data.reload(); }
   };
@@ -136,7 +140,8 @@ export function Accounts() {
             <div style={{ flex: '1 1 200px' }}>
               <h2>{c.institution ?? 'Bank'}{c.environment === 'sandbox' && <span className="muted small" style={{ fontWeight: 400 }}> · practice</span>}</h2>
               <div className="muted small" style={{ marginTop: 2 }}>
-                {c.status === 'ok' && <>Updated {ago(c.lastSyncedAt)} · new activity arrives automatically</>}
+                {c.status === 'ok' && <>Checked {ago(c.lastSyncedAt)}{c.bankUpdatedAt && <> · Kemba's latest data from {ago(c.bankUpdatedAt)}</>}
+                  <Tip label="About how fresh this is" text="Kemba sends new activity to Plaid a few times a day, so a payment you see in Kemba's app can take a few hours to reach Hearth (pending ACH payments sometimes only once they post). Sync now asks Kemba to send it sooner." /></>}
                 {c.status === 'error' && <span className="warn-text">Last sync failed{c.lastError ? `: ${c.lastError}` : ''}</span>}
                 {c.status === 'login_required' && <span className="warn-text">Kemba needs you to sign in again</span>}
               </div>

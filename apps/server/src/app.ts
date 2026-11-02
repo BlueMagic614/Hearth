@@ -27,7 +27,7 @@ const money = z.union([z.number(), z.string()]).transform((v) => parseCents(v));
 export { HOUSEHOLD_TZ, householdToday, currentMonth } from './time';
 import { householdToday, currentMonth } from './time';
 
-export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number; classifier?: PayeeClassifier | null } = {}): Promise<FastifyInstance> {
+export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number; classifier?: PayeeClassifier | null; bankFollowUps?: number[] } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
   await app.register(cors, { origin: opts.webOrigin ?? true, credentials: true });
@@ -448,7 +448,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     return { ok: true };
   });
 
-  await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs, classifier: opts.classifier ?? null });
+  await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs, classifier: opts.classifier ?? null, followUps: opts.bankFollowUps });
   await registerAgentRoutes(app, db, { classifier: opts.classifier ?? null, hid });
 
   return app;

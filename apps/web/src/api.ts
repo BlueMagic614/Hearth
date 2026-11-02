@@ -46,6 +46,6 @@ export interface PlanView {
 }
 
 export interface BankAccountView { id: string; name: string; type: string; subtype: string | null; mask: string | null; balance: number; available: number | null; institution: string | null; updatedAt: string; hidden: boolean }
-export interface ConnectionView { id: string; institution: string | null; environment: string; status: 'ok' | 'error' | 'login_required'; lastError: string | null; lastSyncedAt: string | null; createdAt: string; accounts: BankAccountView[] }
+export interface ConnectionView { id: string; institution: string | null; environment: string; status: 'ok' | 'error' | 'login_required'; lastError: string | null; lastSyncedAt: string | null; createdAt: string; bankUpdatedAt?: string | null; refreshRequestedAt?: string | null; accounts: BankAccountView[] }
 export interface ConnectionsView { configured: boolean; keyReady: boolean; environment: 'sandbox' | 'production' | 'fake' | null; connections: ConnectionView[]; manualAccounts: BankAccountView[] }
 export interface SyncResult { added: number; modified: number; removed: number; categorized: number; learnedDates: number }

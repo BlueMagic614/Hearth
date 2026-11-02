@@ -192,3 +192,33 @@ describe('Plaid errors', () => {
     await a.close();
   });
 });
+
+describe('Sync now with refresh', () => {
+  it('asks Kemba for new activity, records how fresh the data is, and picks up what arrives a bit later', async () => {
+    const slow = Object.create(bank) as FakeBank & { getStatus: () => Promise<{ lastUpdate: string }>; refreshed: number };
+    slow.refreshed = 0;
+    slow.refresh = async () => { slow.refreshed++; };
+    slow.getStatus = async () => ({ lastUpdate: '2026-11-02T14:40:00Z' });
+    slow.pages = [];
+    const a = await buildApp(db, { bank: slow, bankFollowUps: [30] });
+    const inject = (method: string, url: string, payload?: object) => a.inject({ method: method as 'GET', url, payload, headers: { cookie } });
+    bank.pages.length = 0;
+    const ex = (await inject('POST', '/api/plaid/exchange', { publicToken: 'later' })).json();
+    process.env.PLAID_ALLOW_REFRESH = 'true';
+    try {
+      const r = (await inject('POST', `/api/connections/${ex.id}/sync`)).json();
+      expect(r.refreshRequested).toBe(true);
+      expect(slow.refreshed).toBe(1);
+      // Kemba's answer shows up after the first sync; the follow-up sync collects it.
+      slow.pages.push({ added: [txn('t-colgas', '2026-11-02', -96.4, 'COLUMBIA GAS OH')], modified: [], removed: [], nextCursor: 'z1', hasMore: false });
+      await new Promise((res) => setTimeout(res, 300));
+      const got = await db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM transactions WHERE external_id = 't-colgas'");
+      expect(got[0]!.n).toBe(1);
+      const c = (await inject('GET', '/api/connections')).json();
+      expect(c.connections.find((x: { id: string }) => x.id === ex.id).bankUpdatedAt).toBeTruthy();
+    } finally {
+      delete process.env.PLAID_ALLOW_REFRESH;
+      await a.close();
+    }
+  });
+});
