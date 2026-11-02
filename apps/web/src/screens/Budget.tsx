@@ -27,6 +27,13 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
     setCollapsed(next);
     try { localStorage.setItem('hearth.budget.collapsed', JSON.stringify([...next])); } catch { /* storage unavailable */ }
   };
+  const [showChart, setShowChartState] = useState(() => { try { return localStorage.getItem('hearth.budget.chart') === '1'; } catch { return false; } });
+  const setShowChart = (v: boolean) => { setShowChartState(v); try { localStorage.setItem('hearth.budget.chart', v ? '1' : '0'); } catch { /* no storage */ } };
+  /** Open a category's panel from the chart: expand its parents and scroll to it. */
+  const jumpTo = (id: string) => {
+    setOpen(id);
+    setTimeout(() => document.getElementById(`cat-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 60);
+  };
   const toggleCollapse = (id: string) => { const n = new Set(collapsed); n.has(id) ? n.delete(id) : n.add(id); saveCollapsed(n); };
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -344,7 +351,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
   const renderNode = (n: CategoryNode, depth: number, isTop: boolean) => (
     <div key={n.id} className={isTop ? 'bparent' : undefined}>
-      <div className={rowClass(n) + (editing ? '' : ' clickable') + (open === n.id ? ' is-open' : '')} data-cat-id={editing ? n.id : undefined} style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}
+      <div id={`cat-${n.id}`} className={rowClass(n) + (editing ? '' : ' clickable') + (open === n.id ? ' is-open' : '')} data-cat-id={editing ? n.id : undefined} style={{ fontSize: isTop ? 15 : depth > 1 ? 13 : 14 }}
         onClick={(e) => { if (!(e.target as HTMLElement).closest('button, input, select, a')) toggleOpen(n); }}
         {...(editing ? {} : { role: 'button', tabIndex: 0, 'aria-expanded': open === n.id, onKeyDown: (e: React.KeyboardEvent) => rowKey(e, n) })}>
         {editing && (
@@ -403,13 +410,29 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
       <div className="row-wrap">
         <div className="card grow"><div className="stat-label">Take-home this month</div><div className="stat-value" style={{ fontSize: 24 }}>{usd(data.income)}</div></div>
-        <div className="card grow"><div className="stat-label">Planned</div><div className="stat-value" style={{ fontSize: 24 }}>{usd(data.plannedTotal)}</div></div>
+        <button type="button" className="card grow stat-toggle" aria-expanded={showChart} onClick={() => setShowChart(!showChart)} title="Show how the month's plan splits across categories">
+          <div className="stat-label">Planned <span className="small" style={{ color: 'var(--accent)' }}>{showChart ? 'Hide chart' : 'See as chart'}</span></div>
+          <div className="stat-value" style={{ fontSize: 24 }}>{usd(data.plannedTotal)}</div>
+        </button>
         <div className="card grow">
           <div className="stat-label">Left to assign <Tip label="About left to assign" text="Take-home pay minus everything planned. It updates as you add, delete or re-amount categories. Aim for $0." /></div>
           <div className={'stat-value ' + (left === 0 ? 'good' : 'warn')} style={{ fontSize: 24 }}>{left < 0 ? '−' : ''}{usd(Math.abs(left), true)}</div>
           {left < 0 && <div className="stat-note warn">You've planned more than you'll take home.</div>}
         </div>
       </div>
+
+      {showChart && (
+        <div className="card budget-chart screen">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <h2>The whole month's plan <span className="muted" style={{ fontWeight: 400 }}>· by category</span>
+              <Tip label="About the budget chart" text="Each slice is a category's share of everything planned this month. The solid part is what's been spent or paid so far; the pale part is still to come. Click a slice or a name to open that category." />
+            </h2>
+            <button className="btn sm ghost" onClick={() => setShowChart(false)}>Hide</button>
+          </div>
+          <CategoryDonut sort onPick={jumpTo} total={{ planned: tops.reduce((a, t) => a + rp(t), 0), spent: tops.reduce((a, t) => a + rs(t), 0) }}
+            slices={tops.map((t) => ({ id: t.id, name: t.name, planned: rp(t), spent: rs(t), billPaid: t.billPaid }))} />
+        </div>
+      )}
 
       <CashCard month={month} onChange={reload} />
 

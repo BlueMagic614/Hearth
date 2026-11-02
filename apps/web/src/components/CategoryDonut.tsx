@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { usd } from './ui';
 
 /** billPaid: a fluctuating bill whose payment has gone out this month, so it's paid even if under the estimate. */
@@ -25,9 +25,12 @@ function arc(cx: number, cy: number, r0: number, r1: number, a0: number, a1: num
  * How a parent's planned money splits across its categories. Each slice's size is its planned share;
  * the solid part of a slice is what's been paid this month, the pale part what's still to come.
  */
-export function CategoryDonut({ slices, total }: { slices: Slice[]; total: { planned: number; spent: number } }) {
+export function CategoryDonut({ slices, total, sort, onPick }: { slices: Slice[]; total: { planned: number; spent: number }; sort?: boolean; onPick?: (id: string) => void }) {
   const [hover, setHover] = useState<number | null>(null);
   const planned = slices.filter((s) => s.planned > 0);
+  // Biggest first, so the colours go to what matters most and small items fold together.
+  if (sort) planned.sort((x, y) => y.planned - x.planned);
+  let rest: Slice[] = [];
   // Eight colours at most, in a fixed order; anything beyond folds into one neutral slice.
   const shown: (Slice & { color: string })[] = planned.slice(0, MAX).map((s, i) => ({ ...s, color: `var(--cat-${i + 1})` }));
   if (planned.length === MAX + 1) {
@@ -35,7 +38,7 @@ export function CategoryDonut({ slices, total }: { slices: Slice[]; total: { pla
     const x = planned[MAX]!;
     shown.push({ ...x, color: 'var(--cat-rest)' });
   } else if (planned.length > MAX) {
-    const rest = planned.slice(MAX);
+    rest = planned.slice(MAX);
     shown.push({ id: 'rest', name: `${rest.length} more`, planned: rest.reduce((a, s) => a + s.planned, 0), spent: rest.reduce((a, s) => a + s.spent, 0), color: 'var(--cat-rest)' });
   }
   const sum = shown.reduce((a, s) => a + s.planned, 0) || 1;
@@ -58,7 +61,8 @@ export function CategoryDonut({ slices, total }: { slices: Slice[]; total: { pla
           const g = geo[i]!;
           const dim = hover !== null && hover !== i;
           return (
-            <g key={s.id} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} style={{ opacity: dim ? 0.45 : 1, transition: 'opacity .15s' }}>
+            <g key={s.id} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} onClick={() => onPick && s.id !== 'rest' && onPick(s.id)}
+              style={{ opacity: dim ? 0.45 : 1, transition: 'opacity .15s', cursor: onPick && s.id !== 'rest' ? 'pointer' : undefined }}>
               <path d={arc(c, c, r0, r1, g.a0, g.a1)} fill={s.color} fillOpacity={0.22} />
               {g.paid > 0 && <path d={arc(c, c, r0, r1, g.a0, g.a0 + (g.a1 - g.a0) * g.paid)} fill={s.color} />}
               {/* Wider invisible target so thin slices are easy to hover. */}
@@ -74,20 +78,33 @@ export function CategoryDonut({ slices, total }: { slices: Slice[]; total: { pla
         {shown.map((s, i) => {
           const st = status(s);
           return (
-            <li key={s.id} onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} className={hover === i ? 'on' : undefined}>
+            <Fragment key={s.id}>
+            <li onPointerEnter={() => setHover(i)} onPointerLeave={() => setHover(null)} className={(hover === i ? 'on' : '') + (onPick && s.id !== 'rest' ? ' pick' : '')}
+              onClick={() => onPick && s.id !== 'rest' && onPick(s.id)}>
               <span className="swatch" style={{ background: s.color }} aria-hidden="true" />
               <span className="lg-name">{s.name}</span>
+              <span className="lg-pct">{Math.round((s.planned / sum) * 100)}%</span>
               <span className="lg-num">{usd(s.planned)}</span>
               <span className={`lg-status st-${st}`}>
                 <StatusIcon st={st} /> {st === 'part' ? `${usd(s.spent)} of ${usd(s.planned)}` : label[st]}
               </span>
             </li>
+            {s.id === 'rest' && rest.map((r) => (
+              <li key={r.id} className={'sub' + (onPick ? ' pick' : '')} onClick={() => onPick?.(r.id)}>
+                <span />
+                <span className="lg-name">{r.name}</span>
+                <span className="lg-pct">{Math.round((r.planned / sum) * 100)}%</span>
+                <span className="lg-num">{usd(r.planned)}</span>
+                <span className={`lg-status st-${status(r)}`}><StatusIcon st={status(r)} /> {status(r) === 'part' ? `${usd(r.spent)} of ${usd(r.planned)}` : label[status(r)]}</span>
+              </li>
+            ))}
+            </Fragment>
           );
         })}
         {unplanned.map((s) => (
           <li key={s.id} className="muted">
             <span className="swatch" style={{ background: 'var(--line)' }} aria-hidden="true" />
-            <span className="lg-name">{s.name}</span><span className="lg-num">$0</span><span className="lg-status">{s.spent > 0 ? `${usd(s.spent)} spent, not planned` : 'Not planned'}</span>
+            <span className="lg-name">{s.name}</span><span className="lg-pct" /><span className="lg-num">$0</span><span className="lg-status">{s.spent > 0 ? `${usd(s.spent)} spent, not planned` : 'Not planned'}</span>
           </li>
         ))}
       </ul>
