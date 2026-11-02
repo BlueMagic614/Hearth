@@ -23,6 +23,8 @@ export interface Schedule {
   windowDays?: number;
   /** Only in these months (1–12), e.g. [5] for a yearly bill due in May. Omitted = every month. */
   months?: number[] | null;
+  /** Paid out of the check that lands that day (tithe, savings moves), not by the check before. */
+  onPayday?: boolean;
 }
 
 /** A single occurrence moved to another day. */

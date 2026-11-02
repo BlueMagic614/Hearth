@@ -122,7 +122,7 @@ export async function seedHousehold(db: Db, opts: { jasonEmail?: string; reneeEm
     // Tithe follows each paycheck ($350 × 4).
     const tithe = await t.query<{ id: string }>("SELECT id FROM categories WHERE household_id=$1 AND name='Rocky City (tithe)'", [hid]);
     await t.query(
-      "INSERT INTO schedules (id, household_id, name, kind, amount_cents, cadence, days, weekend_rule, category_id, due_day_confirmed) VALUES ($1,$2,'Rocky City (tithe)','bill',$3,'semimonthly',$4,'before',$5,true)",
+      "INSERT INTO schedules (id, household_id, name, kind, amount_cents, cadence, days, weekend_rule, category_id, due_day_confirmed, on_payday) VALUES ($1,$2,'Rocky City (tithe)','bill',$3,'semimonthly',$4,'before',$5,true,true)",
       [randomUUID(), hid, -toCents(350), [10, 15, 25, 30], tithe[0]!.id],
     );
 

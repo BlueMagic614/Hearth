@@ -1,3 +1,4 @@
+import { PaycheckPlan } from '../components/PaycheckPlan';
 import { useEffect, useRef, useState } from 'react';
 import { daysInMonth, dayOfWeek, isoDate, parseCents, type ScheduledEvent } from '@hearth/core';
 import { api, type CalendarView, type Forecast } from '../api';
@@ -24,6 +25,9 @@ export function Calendar({ month, setMonth }: { month: string; setMonth: (m: str
   const [pending, setPending] = useState<Pending>(null);
   const [moveFor, setMoveFor] = useState<{ e: ScheduledEvent; date: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Month grid or the paycheck plan; remembered in this browser.
+  const [view, setViewState] = useState<'month' | 'paychecks'>(() => { try { return localStorage.getItem('hearth.calendar.view') === 'paychecks' ? 'paychecks' : 'month'; } catch { return 'month'; } });
+  const setView = (v: 'month' | 'paychecks') => { setViewState(v); try { localStorage.setItem('hearth.calendar.view', v); } catch { /* no storage */ } };
 
   // ---- drag a chip to another day ----
   const [drag, setDrag] = useState<{ e: ScheduledEvent; x: number; y: number; moved: boolean } | null>(null);
@@ -89,9 +93,24 @@ export function Calendar({ month, setMonth }: { month: string; setMonth: (m: str
   const totals = (data?.events ?? []).reduce((a, e) => ({ inn: a.inn + Math.max(0, e.amount), out: a.out + Math.min(0, e.amount) }), { inn: 0, out: 0 });
   const lowDays = new Set((data?.forecast?.points ?? []).filter((p) => p.balance < (data?.forecast?.cushion ?? 0)).map((p) => p.date));
 
+  const toggle = (
+    <div className="seg" role="tablist" aria-label="Calendar view">
+      <button role="tab" aria-selected={view === 'month'} onClick={() => setView('month')}>Month</button>
+      <button role="tab" aria-selected={view === 'paychecks'} onClick={() => setView('paychecks')}>Paychecks</button>
+    </div>
+  );
+  if (view === 'paychecks') {
+    return (
+      <div className="stack screen">
+        <PageHead sub="Which check pays for what" title="Calendar">{toggle}<MonthPicker month={month} onChange={setMonth} /></PageHead>
+        <PaycheckPlan month={month} />
+      </div>
+    );
+  }
+
   return (
     <div className="stack screen">
-      <PageHead sub="Paydays, bills and savings moves" title="Calendar"><MonthPicker month={month} onChange={(m) => { setMonth(m); setSel(isoDate(m, 1)); }} /></PageHead>
+      <PageHead sub="Paydays, bills and savings moves" title="Calendar">{toggle}<MonthPicker month={month} onChange={(m) => { setMonth(m); setSel(isoDate(m, 1)); }} /></PageHead>
 
       {data?.forecast?.firstBelow && <ForecastWarning f={data.forecast} />}
       {err && <div className="notice warn">{err}</div>}

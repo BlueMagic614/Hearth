@@ -16,6 +16,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const [showHidden, setShowHidden] = useState(false);
   const { data, error, reload: reloadBudget } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}${showHidden ? '&all=1' : ''}`), [month, showHidden]);
   const txns = useLoad(() => api.get<Txn[]>(`/api/transactions?month=${month}`), [month]);
+  const payers = useLoad(() => api.get<{ payers: Record<string, string> }>(`/api/paychecks?month=${month}`).then((r) => r.payers), [month]);
   const reload = () => { reloadBudget(); txns.reload(); };
   const [open, setOpen] = useState<string | null>(null);
   // Collapsed parents are remembered in this browser (a per-person convenience; nothing breaks without it).
@@ -189,6 +190,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
     const moveTo = parentsList.filter((p) => !p.ids.has(n.id) && p.id !== n.id);
     return (
       <div className="bpanel" style={{ marginLeft: indent }} onClick={(e) => e.stopPropagation()}>
+        {isLeaf && payers.data?.[n.id] && <div className="small muted">Paid by <b style={{ color: 'var(--ink-2)' }}>{payers.data[n.id]}</b> this month (see Calendar → Paychecks).</div>}
         <div className="bpanel-actions">
           {isLeaf && (
             <label className="small muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>Planned

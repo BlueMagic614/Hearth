@@ -1,5 +1,6 @@
 import { leaves, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView, type CalendarView, type PlanView } from '../api';
+import { currentPeriod, type PaycheckView } from '../components/PaycheckPlan';
 import { Bar, PageHead, Remaining, Tip, todayISO, useLoad, usd } from '../components/ui';
 
 const nextMonth = (m: string) => { const [y, mo] = m.split('-').map(Number) as [number, number]; const i = y * 12 + mo; return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`; };
@@ -13,6 +14,11 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
   const forecast = cal.data?.forecast ?? null;
   const plan = useLoad(() => api.get<PlanView>('/api/plan'), []);
   const review = useLoad(() => api.get<{ count: number }>('/api/review'), []);
+  const pay = useLoad(async () => {
+    // The check we're living on may belong to last month's plan (Oct 30 carries us to Nov 10).
+    const [a, b] = await Promise.all([api.get<PaycheckView>(`/api/paychecks?month=${month}`), api.get<PaycheckView>(`/api/paychecks?month=${nextMonth(month)}`)]);
+    return currentPeriod(a) ?? currentPeriod(b);
+  }, [month]);
   const cash = useLoad(() => api.get<{ toFill: number; leftovers: { balance: number } }>(`/api/cash?month=${month}`), [month]);
   const today = todayISO();
   const hour = new Date().getHours();
@@ -36,6 +42,20 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
           <button className="btn sm" onClick={() => go('calendar')}>See calendar</button>
         </div>
       )}
+
+      {pay.data && (() => {
+        const p = pay.data;
+        const t = todayISO();
+        const due = p.items.filter((i) => i.kind === 'bill' || i.kind === 'save').filter((i) => i.date >= t).reduce((s, i) => s + i.amount, 0);
+        const fmtD = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        return (
+          <div className={'notice ' + (p.short > 0 ? 'warn' : 'good')}>
+            <span><b>Living on {p.person}'s {fmtD(p.payDate)} check</b> until {fmtD(p.to)}. {due > 0 ? `${usd(due)} in bills still due from it. ` : 'Its bills are all paid. '}
+              {p.short > 0 ? `It's short ${usd(p.short)}.` : `Planned to leave ${usd(Math.max(0, p.surplus + p.carryIn))}.`}</span>
+            <button className="btn sm" onClick={() => { try { localStorage.setItem('hearth.calendar.view', 'paychecks'); } catch { /* */ } go('calendar'); }}>Paycheck plan</button>
+          </div>
+        );
+      })()}
 
       {!!cash.data && (cash.data.toFill > 0 || cash.data.leftovers.balance > 0) && (
         <div className="notice good">

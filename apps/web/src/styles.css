@@ -313,3 +313,24 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .split-list { display: grid; gap: 6px; margin-top: 10px; max-height: 50vh; overflow: auto; }
 .split-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
 .cash-badge { background: var(--accent-wash); color: var(--accent-ink); }
+
+/* Paycheck plan */
+.seg { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.seg button { height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.seg button[aria-selected='true'] { background: var(--ink); color: var(--bg); }
+.pay-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-items: start; }
+.pay-card { display: grid; gap: 10px; }
+.pay-card.live { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.pay-card.past { opacity: .7; }
+.pay-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.pay-who { font-weight: 600; font-size: 15px; }
+.pay-amt { font-size: 20px; font-weight: 600; }
+.pay-bar { height: 8px; border-radius: 6px; background: var(--line-2); overflow: hidden; }
+.pay-bar span { display: block; height: 100%; background: var(--accent); border-radius: 6px; }
+.pay-bar span.over { background: var(--warn); }
+.pay-sum { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.pay-items { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.pay-items li { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line-2); }
+.pay-items li.done { color: var(--muted); }
+.pay-items li.done span:nth-child(2) { text-decoration: line-through; text-decoration-color: var(--line); }
+.pay-items .num { font-weight: 500; }

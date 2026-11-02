@@ -10,6 +10,7 @@ import type { BankProvider } from './bank';
 import { registerBankRoutes } from './bank-routes';
 import { registerAgentRoutes } from './agent-routes';
 import { registerCashRoutes } from './cash-routes';
+import { registerPaycheckRoutes } from './paycheck-routes';
 import { splitNewWithdrawals } from './cash';
 import type { PayeeClassifier } from './agent';
 import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
@@ -479,6 +480,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs, classifier: opts.classifier ?? null, followUps: opts.bankFollowUps });
   await registerAgentRoutes(app, db, { classifier: opts.classifier ?? null, hid });
   await registerCashRoutes(app, db, { hid });
+  await registerPaycheckRoutes(app, db, { hid });
 
   return app;
 }
