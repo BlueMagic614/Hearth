@@ -9,6 +9,7 @@ import { bankFromEnv } from './bank';
 import { ensureMiscCategory } from './services';
 import { syncConnection } from './sync';
 import { classifierFromEnv, runAgent } from './agent';
+import { assistantFromEnv } from './assistant';
 import { householdToday } from './time';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -34,7 +35,7 @@ const bank = bankFromEnv();
 console.log(bank ? `Bank sync: Plaid ${bank.environment}` : 'Bank sync: off (no Plaid keys)');
 const classifier = classifierFromEnv();
 console.log(classifier ? 'Categorization agent: learned model + Claude for new payees' : 'Categorization agent: learned model (no ANTHROPIC_API_KEY, new payees go to review)');
-const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production', bank, classifier });
+const app = await buildApp(db, { webOrigin: process.env.WEB_ORIGIN, secureCookies: process.env.NODE_ENV === 'production', bank, classifier, assistant: assistantFromEnv() });
 
 // In production the server also serves the built web app.
 const webDist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'dist');

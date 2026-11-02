@@ -11,6 +11,8 @@ import { registerBankRoutes } from './bank-routes';
 import { registerAgentRoutes } from './agent-routes';
 import { registerCashRoutes } from './cash-routes';
 import { registerPaycheckRoutes } from './paycheck-routes';
+import { registerAssistantRoutes } from './assistant-routes';
+import type { Assistant } from './assistant';
 import { splitNewWithdrawals } from './cash';
 import type { PayeeClassifier } from './agent';
 import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
@@ -30,7 +32,7 @@ const money = z.union([z.number(), z.string()]).transform((v) => parseCents(v));
 export { HOUSEHOLD_TZ, householdToday, currentMonth } from './time';
 import { householdToday, currentMonth } from './time';
 
-export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number; classifier?: PayeeClassifier | null; bankFollowUps?: number[] } = {}): Promise<FastifyInstance> {
+export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies?: boolean; bank?: BankProvider | null; webhookDelayMs?: number; classifier?: PayeeClassifier | null; bankFollowUps?: number[]; assistant?: Assistant | null } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
   await app.register(cors, { origin: opts.webOrigin ?? true, credentials: true });
@@ -481,6 +483,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   await registerAgentRoutes(app, db, { classifier: opts.classifier ?? null, hid });
   await registerCashRoutes(app, db, { hid });
   await registerPaycheckRoutes(app, db, { hid });
+  await registerAssistantRoutes(app, db, { assistant: opts.assistant ?? null, hid });
 
   return app;
 }

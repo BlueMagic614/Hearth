@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, type ConnectionsView, type Me } from './api';
 import { Icon, thisMonth } from './components/ui';
+import { AskHearth } from './components/AskHearth';
 import { Accounts } from './screens/Accounts';
 import { Budget } from './screens/Budget';
 import { Calendar } from './screens/Calendar';
@@ -71,6 +72,8 @@ export function App() {
         {tab === 'goals' && <Goals />}
         {tab === 'insights' && <Insights month={month} setMonth={setMonth} parentId={insParent} setParentId={setInsParent} />}
       </main>
+
+      <AskHearth />
 
       <nav className="tabbar" aria-label="Main">
         {TABS.filter((t) => t.phone).map((t) => <button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)}>{t.icon}{t.label === 'Transactions' ? 'Spending' : t.label}</button>)}
