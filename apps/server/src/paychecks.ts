@@ -19,6 +19,8 @@ export interface PlanItem {
   suggested?: boolean;
   /** Identifies a line in "Right now" so it can be marked as already paid or covered. */
   key?: string;
+  /** Its date has passed but no payment has shown up at the bank yet. */
+  late?: boolean;
 }
 export interface Check { person: string; payDate: ISODate; amount: number }
 export interface Step { from: ISODate; to: ISODate; items: PlanItem[]; outflow: number }
@@ -42,7 +44,7 @@ export interface Half {
    * For the half we're in: the real picture from the Kemba checking balance instead of the plan's assumptions.
    * end = balance − still due + checks still to come in this half.
    */
-  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null;
+  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[]; done: PlanItem[] } | null;
   /** Lines of "Right now" marked as already paid or covered. */
   coveredKeys?: string[];
 }
@@ -145,9 +147,13 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
     "SELECT SUM(balance_cents) AS balance, MAX(updated_at) AS updated FROM accounts WHERE household_id = $1 AND type = 'checking' AND NOT hidden", [hid]))[0];
   const live = acct?.updated ? halves.find((h) => today >= h.first.payDate && today <= h.to) : undefined;
   if (live && !opts.virtual?.length) {
-    // Bills already paid this half (a linked payment since it began) aren't still due.
-    const paid = new Set((await db.query<{ schedule_id: string }>(
-      "SELECT DISTINCT schedule_id FROM transactions WHERE household_id = $1 AND schedule_id IS NOT NULL AND date >= $2 AND date <= $3", [hid, live.first.payDate, today])).map((r) => r.schedule_id));
+    // Bills already paid this half (a payment linked to the bill, or sorted into its category, since the half began)
+    // aren't still due. Anything else stays due, even past its date: it just hasn't hit the bank yet.
+    const paidRows = await db.query<{ schedule_id: string | null; category_id: string | null }>(
+      "SELECT DISTINCT schedule_id, category_id FROM transactions WHERE household_id = $1 AND amount_cents < 0 AND date >= $2 AND date <= $3", [hid, live.first.payDate, today]);
+    const paid = new Set(paidRows.map((r) => r.schedule_id).filter(Boolean));
+    const paidCats = new Set(paidRows.map((r) => r.category_id).filter(Boolean));
+    const done: PlanItem[] = [];
     const remaining: PlanItem[] = [];
     // Cash already pulled since this half began counts against its cash: only what's left to withdraw is still due.
     const pulled = Number((await db.query<{ s: unknown }>(
@@ -165,8 +171,11 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
           // Cash and card spending for the days still ahead (cash only as far as it hasn't been pulled yet).
           let part = Math.round((i.amount * Math.min(days, left)) / days / 100) * 100;
           if (i.kind === 'cash') { part = Math.min(part, cashBudget); cashBudget -= part; }
-          if (part > 0 && !covered.has(i.kind)) remaining.push({ ...i, key: i.kind, amount: part, name: i.kind === 'cash' ? `Cash still to pull, ${Math.min(days, left)} days` : `${i.name}, ${Math.min(days, left)} days` });
-        } else if (i.date >= today && !paid.has(i.scheduleId) && !covered.has(`${i.scheduleId}|${i.date}`)) remaining.push({ ...i, key: `${i.scheduleId}|${i.date}` });
+          if (part > 0) (covered.has(i.kind) ? done : remaining).push({ ...i, key: i.kind, amount: part, name: i.kind === 'cash' ? `Cash for envelopes, ${Math.min(days, left)} days` : `${i.name}, ${Math.min(days, left)} days` });
+        } else if (!paid.has(i.scheduleId) && !(i.categoryId && paidCats.has(i.categoryId))) {
+          const key = `${i.scheduleId}|${i.date}`;
+          (covered.has(key) ? done : remaining).push({ ...i, key, late: i.date < today });
+        }
       }
     }
     const balance = Number(acct!.balance);
@@ -174,7 +183,7 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
     const checksToCome = live.second && live.second.payDate > today ? live.second.amount : 0;
     live.actual = {
       asOf: new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York' }).format(new Date(acct!.updated as Date)),
-      balance, stillDue, checksToCome, end: balance - stillDue + checksToCome, items: remaining.sort((a, b) => a.date.localeCompare(b.date)),
+      balance, stillDue, checksToCome, end: balance - stillDue + checksToCome, items: remaining.sort((a, b) => a.date.localeCompare(b.date)), done,
     };
   }
 
@@ -197,10 +206,14 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
     step.outflow += item.amount;
     best.outflow += item.amount;
     if (step === best.step1) best.step1.leaves = best.first.amount - best.step1.outflow;
-    if (best.actual && !(best.coveredKeys ?? []).includes(`${item.scheduleId}|${item.date}`)) {
-      best.actual.items.push({ ...item, key: `${item.scheduleId}|${item.date}` });
-      best.actual.stillDue += item.amount;
-      best.actual.end -= item.amount;
+    if (best.actual) {
+      const key = `${item.scheduleId}|${item.date}`;
+      if ((best.coveredKeys ?? []).includes(key)) best.actual.done.push({ ...item, key });
+      else {
+        best.actual.items.push({ ...item, key });
+        best.actual.stillDue += item.amount;
+        best.actual.end -= item.amount;
+      }
     }
   }
 

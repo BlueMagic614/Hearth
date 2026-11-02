@@ -406,3 +406,9 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .reality-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 .cover-btn { height: 22px !important; padding: 0 6px !important; margin-left: 6px; font-size: 11px !important; color: var(--accent) !important; border: 1px solid var(--line) !important; }
+
+.due-list ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.due-row label { display: grid; grid-template-columns: 22px 52px 1fr auto; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); font-size: 13px; cursor: pointer; }
+.due-row input { width: 16px; height: 16px; }
+.due-row.done .due-name, .due-row.done .num { text-decoration: line-through; color: var(--muted); }
+.due-row .num { font-weight: 500; font-variant-numeric: tabular-nums; }

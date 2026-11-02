@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { api } from '../api';
 import { Tip, todayISO, usd, useLoad } from './ui';
 
-export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean; suggested?: boolean; key?: string }
+export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean; suggested?: boolean; key?: string; late?: boolean }
 interface Check { person: string; payDate: string; amount: number }
 interface Step { from: string; to: string; items: PlanItem[]; outflow: number; leaves: number }
 export interface Half { id: string; from: string; to: string; first: Check; second: Check | null; step1: Step; step2: (Step & { pool: number }) | null; carryIn: number; income: number; outflow: number; end: number;
-  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null; coveredKeys?: string[] }
+  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[]; done: PlanItem[] } | null; coveredKeys?: string[] }
 export interface PaycheckView {
   month: string; halves: Half[]; payers: Record<string, string>;
   unscheduled: { categoryId: string; name: string; amount: number; kind: string | null }[];
@@ -27,8 +27,8 @@ export function currentHalf(plan: PaycheckView | null | undefined, today = today
   return { half: h, step };
 }
 
-function Items({ items, today, onCover, startOpen }: { items: PlanItem[]; today: string; onCover?: (i: PlanItem) => void; startOpen?: boolean }) {
-  const [open, setOpen] = useState(!!startOpen);
+function Items({ items, today }: { items: PlanItem[]; today: string }) {
+  const [open, setOpen] = useState(false);
   const bills = items.filter((i) => i.kind === 'bill' || i.kind === 'save').length;
   return (
     <div>
@@ -42,16 +42,45 @@ function Items({ items, today, onCover, startOpen }: { items: PlanItem[]; today:
               <span className="muted">{i.kind === 'cash' || i.kind === 'card' ? '' : fmt(i.date)}</span>
               <span>{i.name}{i.variable && i.kind === 'bill' && <span className="muted small"> · varies</span>}{i.kind === 'save' && <span className="pending-badge cash-badge">saving</span>}
                 {i.suggested && <span className="pending-badge cash-badge" title="Flexible timing: Hearth picked the payday with the most room this month">Hearth's pick</span>}
-                {onCover && i.key && (
-                  <button className="btn sm ghost cover-btn" onClick={() => onCover(i)}
-                    title={i.kind === 'cash' || i.kind === 'card' ? 'Already have it covered (e.g. cash pulled earlier)' : "Already paid (Kemba's balance shows it, the transaction just hasn't come through)"}>
-                    {i.kind === 'cash' || i.kind === 'card' ? 'Already covered' : 'Paid already'}
-                  </button>
-                )}</span>
+</span>
               <span className="num">{usd(i.amount)}</span>
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What's still due in the half we're in, each with a checkbox: tick anything already paid or covered (cash in hand,
+ * a payment the bank hasn't sent yet) and it moves out of the total into "already taken care of".
+ */
+function DueList({ half, onToggle }: { half: Half; onToggle: (key: string, covered: boolean) => void }) {
+  const a = half.actual!;
+  const row = (i: PlanItem, done: boolean) => (
+    <li key={i.key} className={'due-row' + (done ? ' done' : '')}>
+      <label>
+        <input type="checkbox" checked={done} onChange={() => i.key && onToggle(i.key, !done)} style={{ accentColor: 'var(--accent)' }}
+          aria-label={done ? `Count ${i.name} as still due` : `${i.name} is already paid or covered`} />
+        <span className="muted due-date">{i.kind === 'cash' || i.kind === 'card' ? '' : fmt(i.date)}</span>
+        <span className="due-name">{i.name}
+          {i.late && !done && <span className="pending-badge due-badge" title="Its date has passed, but the payment hasn't shown up at Kemba yet">not at Kemba yet</span>}
+          {i.suggested && <span className="pending-badge cash-badge" title="Flexible timing: Hearth picked this payday">Hearth's pick</span>}
+        </span>
+        <span className="num">{usd(i.amount)}</span>
+      </label>
+    </li>
+  );
+  return (
+    <div className="due-list">
+      <div className="small muted">Tick anything that's already paid or covered (cash in hand, card spending done, a payment Kemba hasn't sent yet). It comes off the total.</div>
+      <ul>{a.items.map((i) => row(i, false))}</ul>
+      {a.done.length > 0 && (
+        <>
+          <div className="small muted" style={{ marginTop: 6 }}>Already taken care of: not counted ({usd(a.done.reduce((t, i) => t + i.amount, 0))})</div>
+          <ul>{a.done.map((i) => row(i, true))}</ul>
+        </>
       )}
     </div>
   );
@@ -112,14 +141,7 @@ export function PaycheckPlan({ month }: { month: string }) {
                 <Line label={`Left on ${fmt(h.to)}`} value={signed(h.actual.end)} kind={h.actual.end >= 0 ? 'good' : 'bad'} />
                 {h.actual.end < 0 && <div className="notice warn small">That's {usd(-h.actual.end)} short before {fmt(h.to)}. Hold off on a cash withdrawal or move a bill past {fmt(h.to)} if you can.</div>}
                 {h.actual.end >= 0 && h.actual.end < 10000 && <div className="small muted">Tight, but it works. Keep spending to what's listed until {fmt(h.to)}.</div>}
-                <Items items={h.actual.items} today={today} startOpen onCover={(i) => api.post('/api/paychecks/covered', { halfId: h.id, key: i.key, covered: true }).then(plan.reload)} />
-                {!!h.coveredKeys?.length && (
-                  <div className="small muted">
-                    {h.coveredKeys.length} line{h.coveredKeys.length === 1 ? '' : 's'} marked as already paid or covered ·{' '}
-                    <button className="btn sm ghost" style={{ padding: 0, height: 'auto', color: 'var(--accent)' }}
-                      onClick={() => Promise.all(h.coveredKeys!.map((k) => api.post('/api/paychecks/covered', { halfId: h.id, key: k, covered: false }))).then(plan.reload)}>Undo</button>
-                  </div>
-                )}
+                <DueList half={h} onToggle={(key, covered) => api.post('/api/paychecks/covered', { halfId: h.id, key, covered }).then(plan.reload)} />
               </div>
             )}
 

@@ -103,13 +103,17 @@ describe('the half we are in uses the real balance', () => {
     const { paycheckPlan } = await import('../src/paychecks');
     const hid = (await db.query<{ id: string }>('SELECT id FROM households'))[0]!.id;
     await api('PUT', '/api/accounts/checking', { balance: 612 });
+    // Rent went out on Oct 31; music lessons (due Oct 26) hasn't hit the bank yet.
+    const rent = (await db.query<{ id: string }>("SELECT id FROM categories WHERE name = 'Rent'"))[0]!.id;
+    await db.query("INSERT INTO transactions (id, household_id, external_id, date, amount_cents, merchant, category_id, source) VALUES ('rent1', $1, 'rent1', '2026-10-31', -169000, 'Carlton Equities', $2, 'you')", [hid, rent]);
     const p = await paycheckPlan(db, hid, '2026-11', { today: '2026-11-02' });
     const h = p.halves[0]!;
     expect(h.actual).toBeTruthy();
+    expect(h.actual!.items.find((i) => i.name === "Boy's music lessons")).toMatchObject({ date: '2026-10-26', late: true });
     const a = h.actual!;
     expect(a.balance).toBe(61200);
     expect(a.checksToCome).toBe(0); // Jason's Oct 30 check is already in
-    // Rent (Nov 1) is behind us; the lunch accounts (Nov 2), Spectrum Internet (Nov 5) and Mohela (Nov 8) are still due.
+    // Rent is paid; the lunch accounts (Nov 2), Spectrum Internet (Nov 5) and Mohela (Nov 8) are still due.
     expect(a.items.some((i) => i.name === 'Rent')).toBe(false);
     expect(a.items.filter((i) => i.kind === 'bill').map((i) => i.name)).toEqual(expect.arrayContaining(['Student lunch accounts', 'Spectrum Internet & TV', 'Mohela']));
     expect(a.end).toBe(a.balance - a.stillDue);
