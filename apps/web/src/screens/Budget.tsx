@@ -4,6 +4,7 @@ import { api, type BudgetView, type Txn } from '../api';
 import { CategoryDonut } from '../components/CategoryDonut';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { TagEditor } from '../components/TagEditor';
+import { CashCard } from '../components/CashCard';
 import { SeasonEditor, monthsLabel } from '../components/SeasonEditor';
 import { leafOptions } from './Transactions';
 import { SpendingSuggestions } from '../components/SpendingSuggestions';
@@ -212,6 +213,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
         </div>
 
         {isLeaf && (
+          <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!n.cash} style={{ accentColor: 'var(--accent)' }}
+              onChange={(e) => run(async () => { await api.patch(`/api/categories/${n.id}`, { cash: e.target.checked }); })} />
+            Paid with cash (envelope)
+            <Tip label="About cash envelopes" text="Cash envelopes get filled from ATM withdrawals. Filling the envelope counts as spending this category's money for the month; card purchases here still count too." />
+          </label>
+        )}
+        {isLeaf && (
           <SeasonEditor months={n.months} dueDay={data.hidden?.find((h) => h.id === n.id)?.dueDay ?? null}
             onSave={(months, dueDay) => run(async () => {
               await api.patch(`/api/categories/${n.id}`, { months, dueDay });
@@ -353,6 +362,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
               </button>
             )}
             {nameCell(n, isTop ? 15 : depth > 1 ? 13 : 14, isTop ? 600 : 400)}
+            {n.cash && !n.children.length && <span className="pending-badge cash-badge" title="Paid from a cash envelope">Cash</span>}
             {!!n.months?.length && <span className="pending-badge" title="Shows on the budget only in these months">{monthsLabel(n.months)} only</span>}
             {!!n.months?.length && !n.children.length && n.months.includes(Number(month.slice(5, 7))) && n.planned === 0 && <span className="pending-badge due-badge">Enter this year's amount</span>}
             {n.children.length > 1 && <span className="small count" style={{ color: 'var(--faint)' }}>{n.children.length} {isTop ? 'categories' : 'subcategories'}</span>}
@@ -398,6 +408,8 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
           {left < 0 && <div className="stat-note warn">You've planned more than you'll take home.</div>}
         </div>
       </div>
+
+      <CashCard month={month} onChange={reload} />
 
       <div className="card" style={{ padding: '8px 22px 16px' }}>
         <div className="btoolbar">

@@ -13,6 +13,7 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
   const forecast = cal.data?.forecast ?? null;
   const plan = useLoad(() => api.get<PlanView>('/api/plan'), []);
   const review = useLoad(() => api.get<{ count: number }>('/api/review'), []);
+  const cash = useLoad(() => api.get<{ toFill: number; leftovers: { balance: number } }>(`/api/cash?month=${month}`), [month]);
   const today = todayISO();
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
@@ -33,6 +34,13 @@ export function Today({ name, month, go }: { name: string; month: string; go: (t
           <strong>Heads up:</strong>
           <span>Checking could drop to {usd(forecast.firstBelow.balance)} on {new Date(forecast.firstBelow.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}, below your {usd(forecast.cushion)} cushion.</span>
           <button className="btn sm" onClick={() => go('calendar')}>See calendar</button>
+        </div>
+      )}
+
+      {!!cash.data && (cash.data.toFill > 0 || cash.data.leftovers.balance > 0) && (
+        <div className="notice good">
+          <span>{[cash.data.toFill > 0 ? `${usd(cash.data.toFill)} of cash still to pull for this month's envelopes` : '', cash.data.leftovers.balance > 0 ? `${usd(cash.data.leftovers.balance, true)} in Leftovers waiting for a job` : ''].filter(Boolean).join(' · ')}.</span>
+          <button className="btn sm" onClick={() => go('budget')}>Envelopes</button>
         </div>
       )}
 

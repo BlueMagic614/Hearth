@@ -1,6 +1,6 @@
 import {
-  addMonths, buildTree, eventsForMonth, leaves, lowBalance, monthLabel, parseYM, projectBalance, simulatePayoff,
-  type CategoryRow, type DateSource, type ISODate, type Lump, type Raise, type Schedule, type ScheduleOverride, type Strategy, type YearMonth,
+  addDays, addMonths, buildTree, eventsForMonth, leaves, lowBalance, monthLabel, parseYM, projectBalance, simulatePayoff,
+  type CategoryRow, type DateSource, type ISODate, type Lump, type Raise, type Schedule, type ScheduleOverride, type ScheduledEvent, type Strategy, type YearMonth,
 } from '@hearth/core';
 import type { Db } from './db';
 
@@ -12,18 +12,19 @@ const num = (v: unknown) => (v === null || v === undefined ? 0 : Number(v));
  * was spent there), and so is a parent left with nothing inside; pass includeHidden to get everything.
  */
 export async function categoryRows(db: Db, hid: string, month: YearMonth, opts: { includeHidden?: boolean } = {}): Promise<CategoryRow[]> {
-  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown; bill_paid: boolean; months: number[] | null }>(
+  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown; bill_paid: boolean; months: number[] | null; cash: boolean }>(
     `SELECT c.id, c.name, c.parent_id, c.sort_order, c.kind, c.months,
        CASE WHEN c.months IS NULL
          THEN COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month <= $2 ORDER BY b.month DESC LIMIT 1), 0)
          ELSE COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month = $2), 0) END AS planned,
-       COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = c.id AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2), 0) AS spent,
+       COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = c.id AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2), 0)
+         + COALESCE((SELECT SUM(f.amount_cents) FROM cash_fills f WHERE f.category_id = c.id AND f.month = $2), 0) AS spent, c.cash,
        COALESCE((SELECT bool_or(s.variable) FROM schedules s WHERE s.category_id = c.id), FALSE)
          AND EXISTS (SELECT 1 FROM transactions t WHERE t.category_id = c.id AND t.schedule_id IS NOT NULL AND t.amount_cents < 0 AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2) AS bill_paid
      FROM categories c WHERE c.household_id = $1 AND NOT c.archived`,
     [hid, month],
   );
-  let out: CategoryRow[] = rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid, months: r.months }));
+  let out: CategoryRow[] = rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid, months: r.months, cash: r.cash }));
   if (opts.includeHidden) return out;
   const mm = Number(month.slice(5, 7));
   const wasParent = new Set(out.map((r) => r.parentId).filter(Boolean));
@@ -132,8 +133,21 @@ export async function forecastView(db: Db, hid: string, today: ISODate, days = 4
   const month = today.slice(0, 7) as YearMonth;
   const [schedules, overrides, rows] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid), categoryRows(db, hid, month)]);
   const events = [month, addMonths(month, 1), addMonths(month, 2)].flatMap((m) => eventsForMonth(schedules, m, overrides));
-  const everyday = leaves(buildTree(rows)).filter((n) => n.kind === 'everyday').reduce((s, n) => s + n.planned, 0);
+  const leafRows = leaves(buildTree(rows));
+  // Card spending trickles out daily; cash leaves checking in withdrawals, so it's planned as withdrawals instead:
+  // what this month's envelopes still need, tomorrow, and each later month's full cash plan on the 1st.
+  const everyday = leafRows.filter((n) => n.kind === 'everyday' && !n.cash).reduce((s, n) => s + n.planned, 0);
   const dailySpend = Math.round(everyday / 30);
+  const cashLeaves = leafRows.filter((n) => n.cash);
+  if (cashLeaves.length) {
+    const filled = new Map((await db.query<{ category_id: string; s: unknown }>(
+      "SELECT category_id, SUM(amount_cents) AS s FROM cash_fills WHERE household_id = $1 AND month = $2 AND kind = 'fill' GROUP BY category_id", [hid, month])).map((r) => [r.category_id, Number(r.s)]));
+    const need = cashLeaves.reduce((s, n) => s + Math.max(0, n.planned - (filled.get(n.id) ?? 0)), 0);
+    const plan = cashLeaves.reduce((s, n) => s + n.planned, 0);
+    const cashEvent = (date: ISODate, amount: number): ScheduledEvent => ({ scheduleId: 'cash', originalDate: date, date, name: 'Cash for envelopes', kind: 'bill', amount: -amount, variable: false, source: 'manual', windowDays: 0 });
+    if (need > 0) events.push(cashEvent(addDays(today, 1), need));
+    for (const m of [addMonths(month, 1), addMonths(month, 2)]) if (plan > 0) events.push(cashEvent(`${m}-01` as ISODate, plan));
+  }
   const cushion = await getSetting<number>(db, hid, 'balance_cushion_cents', 100000);
   const points = projectBalance(startBalance, today, days, events, dailySpend, { cautious: true });
   const low = lowBalance(points, cushion);

@@ -293,3 +293,23 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .chip.sm { height: 28px; padding: 0 9px; font-size: 12px; }
 .due-badge { background: var(--warn-soft); color: var(--warn-ink); }
 .hidden-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 4px 0; }
+
+/* Cash envelopes */
+.cash-card { display: grid; gap: 14px; }
+.cash-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; }
+.cash-stats { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); }
+.cash-stats b { color: var(--ink); font-weight: 600; }
+.cash-stats .warn b { color: var(--warn-ink); }
+.envelopes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.envelope { display: grid; gap: 4px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.env-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.env-num { font-size: 12px; }
+.env-bar { height: 4px; border-radius: 4px; background: var(--line-2); overflow: hidden; }
+.env-bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.cash-list { font-size: 13px; }
+.cash-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line-2); }
+.leftovers { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 14px; }
+.recommend { display: grid; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--accent-wash); font-size: 13px; }
+.split-list { display: grid; gap: 6px; margin-top: 10px; max-height: 50vh; overflow: auto; }
+.split-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+.cash-badge { background: var(--accent-wash); color: var(--accent-ink); }

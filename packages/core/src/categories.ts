@@ -15,6 +15,8 @@ export interface CategoryRow {
   billPaid?: boolean;
   /** Only in these months (1–12); planned money is entered for that month alone. Omitted = every month. */
   months?: number[] | null;
+  /** Paid from cash envelopes: filling the envelope counts as spending. */
+  cash?: boolean;
 }
 
 export interface CategoryNode extends CategoryRow {

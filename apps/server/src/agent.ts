@@ -1,5 +1,6 @@
 import type { Db } from './db';
 import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
+import { splitNewWithdrawals } from './cash';
 
 /**
  * The categorization agent. For each uncategorized purchase it tries, in order:
@@ -12,7 +13,7 @@ import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
  */
 
 export const CONFIDENT = 0.8;
-export type Flow = 'spend' | 'income' | 'transfer';
+export type Flow = 'spend' | 'income' | 'transfer' | 'cash';
 
 export interface Leaf { id: string; path: string; kind: string | null; months?: number[] | null }
 export interface PayeeQuestion { key: string; merchant: string; amounts: number[]; bankCategory: string | null }
@@ -28,8 +29,10 @@ export interface PayeeClassifier {
 }
 
 /** Spending, income, or money moving between the household's own accounts, from Plaid's category. */
-export function flowOf(bankCategory: string | null, amount: number): Flow {
+export function flowOf(bankCategory: string | null, amount: number, name = ''): Flow {
   const c = bankCategory ?? '';
+  // ATM and cash withdrawals fill the household's cash envelopes.
+  if (amount < 0 && (c.startsWith('TRANSFER_OUT_WITHDRAWAL') || ((!c || c.startsWith('TRANSFER_OUT')) && /\bATM\b|CASH WITHDRAWAL/i.test(name)))) return 'cash';
   if (c.startsWith('TRANSFER_IN') || c.startsWith('TRANSFER_OUT')) return 'transfer';
   if (c.startsWith('INCOME') && amount > 0) return 'income';
   return 'spend';
@@ -272,6 +275,8 @@ export async function runAgent(db: Db, hid: string, opts: { classifier?: PayeeCl
   const result = await sortTransactions(db, hid, opts);
   // Newly sorted bill payments may belong to the next month (rent paid on the 31st).
   await assignBudgetMonths(db, hid);
+  // New ATM withdrawals get split into the month's cash envelopes.
+  await splitNewWithdrawals(db, hid);
   return result;
 }
 

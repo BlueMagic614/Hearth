@@ -9,6 +9,8 @@ import { HttpError, notFound } from './errors';
 import type { BankProvider } from './bank';
 import { registerBankRoutes } from './bank-routes';
 import { registerAgentRoutes } from './agent-routes';
+import { registerCashRoutes } from './cash-routes';
+import { splitNewWithdrawals } from './cash';
 import type { PayeeClassifier } from './agent';
 import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
 import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
@@ -127,8 +129,11 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       /** Only in these months (1–12), or null for every month. */
       months: z.array(z.number().int().min(1).max(12)).min(1).max(12).nullable().optional(),
       /** Day of the month it's due, for seasonal categories (shown on the calendar). */
-      dueDay: z.number().int().min(1).max(31).nullable().optional() }).parse(req.body);
+      dueDay: z.number().int().min(1).max(31).nullable().optional(),
+      /** Paid from cash envelopes. */
+      cash: z.boolean().optional() }).parse(req.body);
     await ownCategory(req, id);
+    if (b.cash !== undefined) await db.query('UPDATE categories SET cash = $1 WHERE id = $2', [b.cash, id]);
     if (b.months !== undefined) {
       const months = b.months ? [...new Set(b.months)].sort((x, y) => x - y) : null;
       await db.query('UPDATE categories SET months = $1 WHERE id = $2', [months, id]);
@@ -272,7 +277,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     categoryId: z.string().nullable().optional(),
     note: z.string().max(500).optional(),
     /** Spending, income, or a transfer between the household's own accounts. */
-    flow: z.enum(['spend', 'income', 'transfer']).optional(),
+    flow: z.enum(['spend', 'income', 'transfer', 'cash']).optional(),
     /** Count this payment toward a different month (e.g. rent paid early). */
     budgetMonth: monthSchema.nullable().optional(),
     /** Label for a one-off expense in Miscellaneous ("Car repair"). */
@@ -307,6 +312,9 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     const r = await db.query<{ merchant: string }>(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND household_id = $${vals.length} RETURNING merchant`, vals);
     if (!r.length) throw notFound();
     if (b.categoryId) { await linkBills(db, [id]); await assignBudgetMonths(db, hid(req)); }
+    // Cash withdrawals fill envelopes; anything that stops being one gives its envelopes back.
+    if (b.flow === 'cash') await splitNewWithdrawals(db, hid(req));
+    else if (b.flow !== undefined) await db.query("DELETE FROM cash_fills WHERE transaction_id = $1", [id]);
     // Teach by example: other unsorted transactions from the same payee follow this choice right away.
     const key = norm(r[0]!.merchant);
     let alsoSorted = 0;
@@ -470,6 +478,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
 
   await registerBankRoutes(app, db, { bank: opts.bank ?? null, hid, webhookDelayMs: opts.webhookDelayMs, classifier: opts.classifier ?? null, followUps: opts.bankFollowUps });
   await registerAgentRoutes(app, db, { classifier: opts.classifier ?? null, hid });
+  await registerCashRoutes(app, db, { hid });
 
   return app;
 }

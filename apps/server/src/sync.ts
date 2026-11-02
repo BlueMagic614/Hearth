@@ -78,7 +78,7 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
            merchant = EXCLUDED.merchant, raw_name = EXCLUDED.raw_name, bank_category = EXCLUDED.bank_category, pending = EXCLUDED.pending
          RETURNING id, (xmax = 0) AS inserted`,
         [id, hid, acctIds.get(t.accountExternalId) ?? null, t.externalId, t.pendingExternalId, t.date, t.authorizedDate, t.amount,
-          t.merchantName || t.name, t.name, t.category, t.pending, carried?.category_id ?? null, carried?.category_id ? carried.source : 'bank', flowOf(t.category, t.amount)],
+          t.merchantName || t.name, t.name, t.category, t.pending, carried?.category_id ?? null, carried?.category_id ? carried.source : 'bank', flowOf(t.category, t.amount, t.name)],
       );
       if (rows[0]?.inserted) result.added++; else result.modified++;
     }
