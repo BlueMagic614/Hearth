@@ -100,6 +100,18 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
   }
 }
 
+/**
+ * Links payments to the bill whose category they were sorted into (e.g. a landlord payment sorted to Rent),
+ * so the bill's real due day can be learned. Only money going out, and never one already linked.
+ */
+export async function linkBills(db: Db, ids: string[]) {
+  if (!ids.length) return;
+  await db.query(
+    `UPDATE transactions t SET schedule_id = s.id
+     FROM (SELECT DISTINCT ON (category_id) id, category_id FROM schedules WHERE category_id IS NOT NULL ORDER BY category_id, id) s
+     WHERE t.id = ANY($1) AND t.schedule_id IS NULL AND t.amount_cents < 0 AND s.category_id = t.category_id`, [ids]);
+}
+
 /** Words too common to identify a bill's payee ("Pet insurance" must not catch PetSmart). */
 const GENERIC = new Set(['the', 'my', 'pet', 'car', 'home', 'auto', 'life', 'student', 'boy', 'boys', 'kids', 'music', 'lessons', 'insurance', 'internet', 'mobile', 'extra', 'lunch', 'accounts', 'modern', 'rent']);
 

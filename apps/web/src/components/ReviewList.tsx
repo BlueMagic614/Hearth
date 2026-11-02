@@ -27,20 +27,21 @@ export function ReviewList({ options, onChange }: { options: { id: string; label
   const choose = (t: ReviewItem, value: string) => act(async () => {
     const body = value === '__transfer' ? { flow: 'transfer' } : value === '__income' ? { flow: 'income' } : { categoryId: value };
     const r = await api.patch<{ alsoSorted?: number }>(`/api/transactions/${t.id}`, body);
-    setNote(r.alsoSorted ? `Also sorted ${r.alsoSorted} more from ${t.merchant}.` : null);
+    setNote(r.alsoSorted ? `Also sorted ${r.alsoSorted} more from ${t.merchant.replace(/[.!?]+$/, '')}.` : null);
   });
 
   const items = review.data?.items ?? [];
   if (!items.length) return null;
   const withGuess = items.filter((i) => i.suggested_category_id);
   // One row per payee: sorting one sorts the rest of that payee's purchases.
-  const groups: (ReviewItem & { count: number; total: number })[] = [];
+  const groups: (ReviewItem & { count: number; first: string })[] = [];
   const byKey = new Map<string, (typeof groups)[number]>();
   for (const i of items) {
     const key = i.merchant.toLowerCase().replace(/[^a-z]/g, '') || i.id;
     const g = byKey.get(key);
-    if (g) { g.count++; g.total += i.amount_cents; continue; }
-    const n = { ...i, count: 1, total: i.amount_cents };
+    // Items arrive newest first, so the row shows the latest purchase and how far back the others go.
+    if (g) { g.count++; g.first = i.date; continue; }
+    const n = { ...i, count: 1, first: i.date };
     byKey.set(key, n);
     groups.push(n);
   }
@@ -58,8 +59,8 @@ export function ReviewList({ options, onChange }: { options: { id: string; label
       {shown.map((t) => (
         <div key={t.id} className="review-row">
           <span className="muted" style={{ width: 52, fontSize: 13 }}>{day(t.date)}</span>
-          <span style={{ flex: '1 1 150px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}{t.count > 1 && <span className="muted small" style={{ fontWeight: 400 }}> · {t.count} purchases</span>}</span>
-          <span style={{ width: 88, textAlign: 'right', fontWeight: 500 }} className={t.total > 0 ? 'good' : undefined} title={t.count > 1 ? 'Total of these purchases' : undefined}>{t.total > 0 ? '+' : ''}{usd(Math.abs(t.total), true)}</span>
+          <span style={{ flex: '1 1 150px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}{t.count > 1 && <span className="muted small" style={{ fontWeight: 400 }}> · {t.count} purchases since {day(t.first)}</span>}</span>
+          <span style={{ width: 88, textAlign: 'right', fontWeight: 500 }} className={t.amount_cents > 0 ? 'good' : undefined} title={t.count > 1 ? 'Latest purchase' : undefined}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
           {t.suggested_category_id && (
             <button className="btn sm accent" disabled={busy} onClick={() => choose(t, t.suggested_category_id!)} title={t.confidence !== null ? `Hearth is about ${Math.round(t.confidence * 100)}% sure` : undefined}>
               {t.suggested_name}

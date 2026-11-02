@@ -1,5 +1,5 @@
 import type { Db } from './db';
-import { categorize, norm } from './sync';
+import { categorize, linkBills, norm } from './sync';
 
 /**
  * The categorization agent. For each uncategorized purchase it tries, in order:
@@ -93,6 +93,10 @@ export class PayeeModel {
 
 /** [Plaid category prefix, pattern for a Hearth category name, how dependable the mapping is]. First match wins. */
 const BANK_MAP: [string, RegExp, number][] = [
+  ['RENT_AND_UTILITIES_RENT', /^rent$/i, 0.9],
+  ['RENT_AND_UTILITIES_TELEPHONE', /mobile|phone/i, 0.6],
+  ['RENT_AND_UTILITIES_INTERNET_AND_CABLE', /internet/i, 0.6],
+  ['MEDICAL', /medical|health|doctor|clinic/i, 0.6],
   ['FOOD_AND_DRINK_GROCERIES', /grocer/i, 0.85],
   ['FOOD_AND_DRINK_COFFEE', /coffee/i, 0.85],
   ['FOOD_AND_DRINK_FAST_FOOD', /restaurant|takeout|dining/i, 0.8],
@@ -224,6 +228,10 @@ export async function runAgent(db: Db, hid: string, opts: { classifier?: PayeeCl
     `SELECT id, merchant, raw_name, bank_category, amount_cents, to_char(date, 'YYYY-MM-DD') AS date FROM transactions
      WHERE household_id = $1 AND category_id IS NULL AND flow = 'spend' ORDER BY date DESC`, [hid]);
 
+  // Payments people already sorted into a bill's category count toward learning that bill's due day.
+  const unlinked = await db.query<{ id: string }>("SELECT id FROM transactions WHERE household_id = $1 AND category_id IS NOT NULL AND schedule_id IS NULL AND amount_cents < 0 AND external_id IS NOT NULL", [hid]);
+  await linkBills(db, unlinked.map((u) => u.id));
+
   // 1. Memory and bills.
   const first = await load();
   res.remembered = await categorize(db, hid, first.map((t) => t.id));
@@ -246,13 +254,15 @@ export async function runAgent(db: Db, hid: string, opts: { classifier?: PayeeCl
   const assign = async (t: Candidate, a: PayeeAnswer, source: string) => {
     await db.query("UPDATE transactions SET category_id = $1, source = $2, confidence = $3, needs_review = FALSE, suggested_category_id = NULL WHERE id = $4",
       [a.categoryId, source, a.confidence, t.id]);
+    await linkBills(db, [t.id]);
   };
 
   const left: Candidate[] = [];
   for (const t of todo) {
     const p = model.predict(features(t.merchant, t.raw_name, t.bank_category, t.amount_cents));
     if (p && p.evidence && p.confidence >= CONFIDENT) { await assign(t, p, 'agent'); res.model++; continue; }
-    if (p) consider(t.id, { categoryId: p.categoryId, confidence: Math.min(p.confidence, p.evidence ? 1 : 0.5) });
+    // A guess with no evidence behind it (only Plaid's category and the amount) isn't worth showing.
+    if (p?.evidence) consider(t.id, p);
     // 3. Plaid's category.
     const b = fromBankCategory(t.bank_category, leaves);
     if (b && b.confidence >= CONFIDENT) { await assign(t, b, 'bank'); res.bank++; continue; }

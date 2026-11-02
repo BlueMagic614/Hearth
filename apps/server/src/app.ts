@@ -10,7 +10,7 @@ import type { BankProvider } from './bank';
 import { registerBankRoutes } from './bank-routes';
 import { registerAgentRoutes } from './agent-routes';
 import type { PayeeClassifier } from './agent';
-import { categorize, norm } from './sync';
+import { categorize, linkBills, norm } from './sync';
 import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
 
 declare module 'fastify' {
@@ -278,6 +278,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     vals.push(id, hid(req));
     const r = await db.query<{ merchant: string }>(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND household_id = $${vals.length} RETURNING merchant`, vals);
     if (!r.length) throw notFound();
+    if (b.categoryId) await linkBills(db, [id]);
     // Teach by example: other unsorted transactions from the same payee follow this choice right away.
     const key = norm(r[0]!.merchant);
     let alsoSorted = 0;

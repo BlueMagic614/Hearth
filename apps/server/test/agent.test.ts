@@ -212,3 +212,28 @@ describe('budget suggestions', () => {
     expect(budget.leftToAssign).toBe(1241 + 8500);
   });
 });
+
+describe('rent and weak guesses', () => {
+  it('sorts the landlord to Rent, links it to the bill, and learns the due day', async () => {
+    const a = await bankTxn('Carlton Equities', -1687.22, 'RENT_AND_UTILITIES_RENT', daysAgo(31));
+    const b = await bankTxn('Carlton Equities', -1687.22, 'RENT_AND_UTILITIES_RENT', daysAgo(1));
+    await api('POST', '/api/agent/run');
+    expect(await row(a)).toMatchObject({ category: 'Rent', source: 'bank' });
+    const linked = await db.query<{ n: number }>("SELECT COUNT(*)::int AS n FROM transactions t JOIN schedules s ON s.id = t.schedule_id WHERE s.name = 'Rent' AND t.id = ANY($1)", [[a, b]]);
+    expect(linked[0]!.n).toBe(2);
+  });
+
+  it('links a payment you sort into a bill category by hand', async () => {
+    const t = await bankTxn('NEW LANDLORD LLC', -1690, null);
+    await api('PATCH', `/api/transactions/${t}`, { categoryId: await leafId('Rent') });
+    const r = await db.query<{ name: string }>('SELECT s.name FROM transactions t JOIN schedules s ON s.id = t.schedule_id WHERE t.id = $1', [t]);
+    expect(r[0]?.name).toBe('Rent');
+  });
+
+  it("doesn't offer a guess the model has no evidence for", async () => {
+    const t = await bankTxn('Northwoods Clinic', -40, 'PERSONAL_CARE_OTHER');
+    await api('POST', '/api/agent/run');
+    // Haircuts was learned from PERSONAL_CARE_OTHER purchases, but nothing about this payee points there.
+    expect(await row(t)).toMatchObject({ category: null, needs_review: true, suggestion: null });
+  });
+});

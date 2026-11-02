@@ -4,6 +4,7 @@ import { addDays, type ISODate } from '@hearth/core';
 import type { Db } from './db';
 import { leavesFor, runAgent, type PayeeClassifier } from './agent';
 import { HttpError } from './errors';
+import { linkBills } from './sync';
 import { setPlanned } from './services';
 import { householdToday } from './time';
 
@@ -68,6 +69,7 @@ export async function registerAgentRoutes(app: FastifyInstance, db: Db, { classi
     const r = await db.query(
       `UPDATE transactions SET category_id = suggested_category_id, source = 'you', needs_review = FALSE, suggested_category_id = NULL
        WHERE household_id = $1 AND id = ANY($2) AND needs_review AND suggested_category_id IS NOT NULL RETURNING id`, [hid(req), b.ids]);
+    await linkBills(db, r.map((x) => (x as { id: string }).id));
     await runAgent(db, hid(req), { classifier, today: householdToday() });
     return { accepted: r.length };
   });
