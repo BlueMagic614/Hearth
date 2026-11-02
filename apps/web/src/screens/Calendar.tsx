@@ -6,6 +6,10 @@ import { MonthPicker, PageHead, Tip, todayISO, useLoad, usd } from '../component
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const fmtDay = (d: string, opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', opts);
 const sourceNote = (e: ScheduledEvent) =>
+  (e.originalDate.slice(0, 7) !== e.date.slice(0, 7) && e.source !== 'moved'
+    ? `${new Date(e.originalDate + 'T12:00:00').toLocaleDateString('en-US', { month: 'long' })}'s bill, due ${fmtDay(e.originalDate, { weekday: 'short', month: 'short', day: 'numeric' })}, moved past the weekend · `
+    : '') + baseNote(e);
+const baseNote = (e: ScheduledEvent) =>
   e.source === 'moved' ? 'Moved just this month'
     : e.source === 'manual' ? (e.kind === 'pay' ? 'Direct deposit' : 'Date set by you')
     : e.source === 'learned' ? `Learned from Kemba · usually within ${e.windowDays} day${e.windowDays === 1 ? '' : 's'}`

@@ -182,13 +182,16 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
 }
 
 const ymOf = (d: string) => d.slice(0, 7);
+const prevYM = (ym: string) => { const [y, m] = ym.split('-').map(Number) as [number, number]; return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`; };
 const nextYM = (ym: string) => { const [y, m] = ym.split('-').map(Number) as [number, number]; return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
 const dim = (ym: string) => { const [y, m] = ym.split('-').map(Number) as [number, number]; return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
 
 /**
- * A monthly bill paid in the last week of a month for the next one (rent paid on the 31st, due the 1st) counts
- * toward the next month. That's when the bill is due early in the month, or when this month already has its payment.
- * Only payments nobody has placed by hand are moved.
+ * Lines payments up with the month they belong to. Only payments nobody has placed by hand are moved.
+ * - Paid early: a monthly bill paid in the last week of a month for the next one (rent paid on the 31st, due the 1st)
+ *   counts toward the next month, when the bill is due early in the month or this month already has its payment.
+ * - Paid late: an end-of-month bill that slipped into the first days of the next month (a weekend or holiday on the
+ *   31st, like Columbia Gas on Nov 2) counts toward the month before, when that month has no payment of its own.
  */
 export async function assignBudgetMonths(db: Db, hid: string): Promise<number> {
   const rows = await db.query<{ id: string; date: string; schedule_id: string; days: number[]; budget_month: string | null }>(
@@ -206,9 +209,14 @@ export async function assignBudgetMonths(db: Db, hid: string): Promise<number> {
     const due = r.days[0] ?? 1;
     const lateInMonth = day >= dim(ym) - 6;
     const next = nextYM(ym);
+    const prev = prevYM(ym);
     if (lateInMonth && (due <= 7 || (count.get(`${r.schedule_id}|${ym}`) ?? 0) > 0) && !(count.get(`${r.schedule_id}|${next}`) ?? 0)) {
       await db.query('UPDATE transactions SET budget_month = $1 WHERE id = $2', [next, r.id]);
       bump(`${r.schedule_id}|${next}`);
+      moved++;
+    } else if (day <= 5 && due >= 20 && !(count.get(`${r.schedule_id}|${prev}`) ?? 0)) {
+      await db.query('UPDATE transactions SET budget_month = $1 WHERE id = $2', [prev, r.id]);
+      bump(`${r.schedule_id}|${prev}`);
       moved++;
     } else bump(`${r.schedule_id}|${ym}`);
   }
@@ -225,10 +233,13 @@ export async function learnDueDates(db: Db, hid: string): Promise<number> {
     `SELECT t.schedule_id, to_char(t.date, 'YYYY-MM-DD') AS date, t.budget_month FROM transactions t JOIN schedules s ON s.id = t.schedule_id
      WHERE t.household_id = $1 AND NOT t.pending AND s.date_source IN ('placeholder', 'learned') AND s.cadence = 'monthly' AND t.amount_cents < 0`, [hid]);
   const by = new Map<string, number[]>();
+  const late = new Set<string>();
   for (const r of rows) {
     const ym = ymOf(r.date);
     let day = Number(r.date.slice(8, 10));
     if (r.budget_month && r.budget_month === nextYM(ym)) day -= dim(ym);
+    // Paid a few days late into the next month: reads as past the end of its own month (Nov 2 for October = day 33).
+    if (r.budget_month && r.budget_month === prevYM(ym)) { day += dim(r.budget_month); late.add(r.schedule_id); }
     by.set(r.schedule_id, [...(by.get(r.schedule_id) ?? []), day]);
   }
   let n = 0;
@@ -238,7 +249,12 @@ export async function learnDueDates(db: Db, hid: string): Promise<number> {
     const median = sorted[Math.floor(sorted.length / 2)]!;
     const due = Math.min(31, Math.max(1, median));
     const window = Math.min(5, Math.max(...sorted.map((d) => Math.abs(d - due))));
-    const r = await db.query("UPDATE schedules SET days = $1, window_days = $2, date_source = 'learned' WHERE id = $3 AND date_source IN ('placeholder', 'learned') AND (days <> $1 OR window_days <> $2 OR date_source <> 'learned') RETURNING id", [[due], window, sid]);
+    // A bill seen slipping past a weekend is expected on the next business day.
+    const rule = late.has(sid) ? 'after' : null;
+    const r = await db.query(
+      `UPDATE schedules SET days = $1, window_days = $2, date_source = 'learned', weekend_rule = COALESCE($4, weekend_rule)
+       WHERE id = $3 AND date_source IN ('placeholder', 'learned') AND (days <> $1 OR window_days <> $2 OR date_source <> 'learned' OR weekend_rule <> COALESCE($4, weekend_rule)) RETURNING id`,
+      [[due], window, sid, rule]);
     n += r.length;
   }
   return n;

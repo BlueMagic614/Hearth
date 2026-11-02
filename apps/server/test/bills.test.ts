@@ -101,3 +101,27 @@ describe('two bills from one payee', () => {
     expect(link[0]?.name).toBe('Spectrum Internet & TV');
   });
 });
+
+describe('end-of-month bill paid late', () => {
+  it('counts Columbia Gas paid on Nov 2 toward October, and expects November at the end of the month', async () => {
+    const bills = await db.query<{ id: string; category_id: string }>("SELECT id, category_id FROM schedules WHERE name = 'Columbia Gas'");
+    const sep = await bankTxn('Columbia Gas of Ohio', -88.1, null, '2026-09-30');
+    const nov2 = await bankTxn('Columbia Gas of Ohio', -96.4, null, '2026-11-02');
+    await db.query('UPDATE transactions SET category_id = $1 WHERE id = ANY($2)', [bills[0]!.category_id, [sep, nov2]]);
+    await api('POST', '/api/agent/run');
+    const months = await db.query<{ id: string; m: string }>("SELECT id, COALESCE(budget_month, to_char(date, 'YYYY-MM')) AS m FROM transactions WHERE id = ANY($1)", [[sep, nov2]]);
+    expect(months.find((x) => x.id === nov2)!.m).toBe('2026-10');
+    expect(months.find((x) => x.id === sep)!.m).toBe('2026-09');
+    expect(find(await budget('2026-10'), 'Columbia Gas')!.billPaid).toBe(true);
+    expect(find(await budget('2026-11'), 'Columbia Gas')!.billPaid).toBe(false);
+
+    const { learnDueDates } = await import('../src/sync');
+    await learnDueDates(db, hid);
+    const s = (await db.query<{ days: number[]; weekend_rule: string }>("SELECT days, weekend_rule FROM schedules WHERE name = 'Columbia Gas'"))[0]!;
+    expect(s.days[0]).toBeGreaterThanOrEqual(30);
+    expect(s.weekend_rule).toBe('after');
+    const nov = (await api('GET', '/api/calendar?month=2026-11')).body.events as { name: string; date: string }[];
+    // October's bill (due Sat Oct 31) lands Monday Nov 2; November's is due Nov 30.
+    expect(nov.filter((e) => e.name === 'Columbia Gas').map((e) => e.date)).toEqual(['2026-11-02', '2026-11-30']);
+  });
+});
