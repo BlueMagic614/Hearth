@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView, type Txn } from '../api';
 import { ReviewList } from '../components/ReviewList';
+import { CategoryPicker } from '../components/CategoryPicker';
 import { MonthPicker, PageHead, Tip, todayISO, useLoad, usd } from '../components/ui';
 
 /** Every leaf category with its path, e.g. "Other › Hobbies › Music gear". */
@@ -45,10 +46,8 @@ export function Transactions({ month, setMonth }: { month: string; setMonth: (m:
         <label className="field" style={{ flex: '2 1 180px' }}>Who<input className="input" placeholder="Kroger, Speedway…" value={form.merchant} onChange={(e) => setForm({ ...form, merchant: e.target.value })} /></label>
         <label className="field" style={{ flex: '1 1 110px' }}>Amount<input className="input num" inputMode="decimal" placeholder="$" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></label>
         <label className="field" style={{ flex: '2 1 220px' }}>Category
-          <select className="input" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
-            <option value="">Choose later</option>
-            {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-          </select>
+          <CategoryPicker label="Category" value={form.categoryId} options={options} special={[{ id: '', label: 'Choose later' }]} placeholder="Choose later"
+            onChange={(id) => setForm({ ...form, categoryId: id })} />
         </label>
         <label className="small muted" style={{ display: 'flex', alignItems: 'center', gap: 6, height: 38 }}>
           <input type="checkbox" checked={form.income} onChange={(e) => setForm({ ...form, income: e.target.checked })} style={{ accentColor: 'var(--accent)' }} /> Money in
@@ -66,17 +65,13 @@ export function Transactions({ month, setMonth }: { month: string; setMonth: (m:
           <div key={t.id} className="list-row" style={{ flexWrap: 'wrap' }}>
             <span className="muted" style={{ width: 56, fontSize: 13 }}>{new Date(t.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
             <span style={{ flex: '1 1 160px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge" title="Still pending at Kemba; the amount or date can change when it posts">Pending</span>}{['rule', 'agent', 'bank', 'claude'].includes(t.source) && t.category_id && <span className="pending-badge" title={`Sorted automatically (${{ rule: 'a past choice or a matching bill', agent: 'learned from your choices', bank: "Kemba's category", claude: 'Claude' }[t.source]}). Change it if it's wrong and Hearth will remember.`}>Auto</span>}</span>
-            <select className="input sm" style={{ flex: '1 1 200px', maxWidth: 280 }} value={t.category_id ?? (t.flow && t.flow !== 'spend' ? `__${t.flow}` : '')} aria-label={`Category for ${t.merchant}`}
-              onChange={(e) => {
-                const v = e.target.value;
+            <CategoryPicker compact style={{ flex: '1 1 200px', maxWidth: 280 }} label={`Category for ${t.merchant}`}
+              value={t.category_id ?? (t.flow && t.flow !== 'spend' ? `__${t.flow}` : '')} options={options}
+              special={[{ id: '', label: t.needs_review ? 'Needs a look' : 'Uncategorized' }, ...[{ id: '__transfer', label: 'Transfer between our accounts' }, { id: '__income', label: 'Income (pay, deposits)' }]]} placeholder="Uncategorized"
+              onChange={(v) => {
                 const body = v === '__transfer' || v === '__income' ? { flow: v.slice(2), categoryId: null } : { categoryId: v || null, flow: 'spend' };
                 api.patch(`/api/transactions/${t.id}`, body).then(txns.reload);
-              }}>
-              <option value="">{t.needs_review ? 'Needs a look' : 'Uncategorized'}</option>
-              <option value="__transfer">Transfer between our accounts</option>
-              <option value="__income">Income (pay, deposits)</option>
-              {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-            </select>
+              }} />
             <span style={{ width: 100, textAlign: 'right', fontWeight: 500 }} className={t.amount_cents > 0 ? 'good' : undefined}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
             <button className="icon-btn danger" aria-label={`Delete ${t.merchant}`} onClick={() => api.del(`/api/transactions/${t.id}`).then(txns.reload)}>×</button>
           </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { Tip, usd, useLoad } from './ui';
+import { CategoryPicker } from './CategoryPicker';
 
 export interface ReviewItem {
   id: string; date: string; amount_cents: number; merchant: string; pending: boolean; bank_category: string | null;
@@ -66,12 +67,9 @@ export function ReviewList({ options, onChange }: { options: { id: string; label
               {t.suggested_name}
             </button>
           )}
-          <select className="input sm" style={{ flex: '0 1 220px' }} value="" disabled={busy} aria-label={`Choose a category for ${t.merchant}`} onChange={(e) => e.target.value && choose(t, e.target.value)}>
-            <option value="">{t.suggested_category_id ? 'Something else…' : 'Choose a category…'}</option>
-            <option value="__transfer">Transfer between our accounts</option>
-            <option value="__income">Income (pay, deposits)</option>
-            {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-          </select>
+          <CategoryPicker compact style={{ flex: '0 1 240px' }} label={`Choose a category for ${t.merchant}`} value={null} options={options}
+            special={[{ id: '__transfer', label: 'Transfer between our accounts' }, { id: '__income', label: 'Income (pay, deposits)' }]} placeholder={t.suggested_category_id ? 'Something else… (type to search)' : 'Type or choose a category…'}
+            onChange={(v) => { if (!busy) choose(t, v); }} />
         </div>
       ))}
       {groups.length > 6 && <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setAll(!all)}>{all ? 'Show fewer' : `Show all ${groups.length} payees`}</button>}

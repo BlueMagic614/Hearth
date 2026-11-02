@@ -248,3 +248,19 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .donut-legend .st-paid { color: var(--accent-ink); }
 @media (max-width: 560px) { .donut-legend li { grid-template-columns: 12px 1fr auto; } .donut-legend .lg-status { grid-column: 2 / -1; margin-top: -4px; } .donut-wrap { justify-content: center; } }
 @media (max-width: 760px) { .btoolbar { position: static; } }
+
+/* Type-to-search category picker */
+.picker { position: relative; min-width: 0; }
+.picker-input { width: 100%; padding-right: 28px; cursor: pointer; text-overflow: ellipsis; }
+.picker-input:focus { cursor: text; }
+.picker-input::placeholder { color: var(--ink-2); }
+.picker-input:focus::placeholder { color: var(--faint); }
+.picker-caret { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.picker-list { position: absolute; z-index: 40; left: 0; right: 0; min-width: min(320px, 90vw); top: calc(100% + 4px); max-height: 280px; overflow: auto; margin: 0; padding: 4px;
+  list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.12); animation: panel-in .12s ease; }
+.picker-list li { padding: 7px 10px; border-radius: 7px; font-size: 13px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-list li.hi { background: var(--accent-wash); }
+.picker-list li.sel { font-weight: 600; }
+.picker-list li.special { color: var(--muted); }
+.picker-list li.special + li:not(.special) { border-top: 1px solid var(--line-2); margin-top: 3px; padding-top: 9px; }
+.picker-empty { color: var(--muted); cursor: default !important; }
