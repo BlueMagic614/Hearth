@@ -11,6 +11,8 @@ export interface CategoryRow {
   spent: Cents;
   /** Free-form kind used by analytics: 'bill', 'everyday', 'savings', 'debt', 'giving'. */
   kind?: string | null;
+  /** A fluctuating bill (utilities) with a payment this month: paid, whatever the amount. */
+  billPaid?: boolean;
 }
 
 export interface CategoryNode extends CategoryRow {

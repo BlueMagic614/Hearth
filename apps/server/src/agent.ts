@@ -1,5 +1,5 @@
 import type { Db } from './db';
-import { categorize, linkBills, norm } from './sync';
+import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
 
 /**
  * The categorization agent. For each uncategorized purchase it tries, in order:
@@ -210,6 +210,13 @@ export interface AgentResult { remembered: number; model: number; bank: number; 
 interface Candidate { id: string; merchant: string; raw_name: string | null; bank_category: string | null; amount_cents: number; date: string }
 
 export async function runAgent(db: Db, hid: string, opts: { classifier?: PayeeClassifier | null; today: string; windowDays?: number }): Promise<AgentResult> {
+  const result = await sortTransactions(db, hid, opts);
+  // Newly sorted bill payments may belong to the next month (rent paid on the 31st).
+  await assignBudgetMonths(db, hid);
+  return result;
+}
+
+async function sortTransactions(db: Db, hid: string, opts: { classifier?: PayeeClassifier | null; today: string; windowDays?: number }): Promise<AgentResult> {
   const windowDays = opts.windowDays ?? 90;
   const since = new Date(Date.parse(opts.today + 'T12:00:00Z') - windowDays * 86400_000).toISOString().slice(0, 10);
   const res: AgentResult = { remembered: 0, model: 0, bank: 0, claude: 0, review: 0 };
@@ -231,6 +238,7 @@ export async function runAgent(db: Db, hid: string, opts: { classifier?: PayeeCl
   // Payments people already sorted into a bill's category count toward learning that bill's due day.
   const unlinked = await db.query<{ id: string }>("SELECT id FROM transactions WHERE household_id = $1 AND category_id IS NOT NULL AND schedule_id IS NULL AND amount_cents < 0 AND external_id IS NOT NULL", [hid]);
   await linkBills(db, unlinked.map((u) => u.id));
+  await assignBudgetMonths(db, hid);
 
   // 1. Memory and bills.
   const first = await load();

@@ -7,14 +7,16 @@ import type { Db } from './db';
 const num = (v: unknown) => (v === null || v === undefined ? 0 : Number(v));
 
 export async function categoryRows(db: Db, hid: string, month: YearMonth): Promise<CategoryRow[]> {
-  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown }>(
+  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown; bill_paid: boolean }>(
     `SELECT c.id, c.name, c.parent_id, c.sort_order, c.kind,
        COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month <= $2 ORDER BY b.month DESC LIMIT 1), 0) AS planned,
-       COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = c.id AND to_char(t.date, 'YYYY-MM') = $2), 0) AS spent
+       COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = c.id AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2), 0) AS spent,
+       COALESCE((SELECT bool_or(s.variable) FROM schedules s WHERE s.category_id = c.id), FALSE)
+         AND EXISTS (SELECT 1 FROM transactions t WHERE t.category_id = c.id AND t.schedule_id IS NOT NULL AND t.amount_cents < 0 AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2) AS bill_paid
      FROM categories c WHERE c.household_id = $1 AND NOT c.archived`,
     [hid, month],
   );
-  return rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent) }));
+  return rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid }));
 }
 
 export async function monthlyIncome(db: Db, hid: string): Promise<number> {

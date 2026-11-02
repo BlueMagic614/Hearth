@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { usd } from './ui';
 
-export interface Slice { id: string; name: string; planned: number; spent: number }
+/** billPaid: a fluctuating bill whose payment has gone out this month, so it's paid even if under the estimate. */
+export interface Slice { id: string; name: string; planned: number; spent: number; billPaid?: boolean }
 type Status = 'paid' | 'part' | 'none';
 
-const status = (s: Slice): Status => (s.planned > 0 && s.spent >= s.planned ? 'paid' : s.spent > 0 ? 'part' : 'none');
+const status = (s: Slice): Status => (s.billPaid || (s.planned > 0 && s.spent >= s.planned) ? 'paid' : s.spent > 0 ? 'part' : 'none');
 const label: Record<Status, string> = { paid: 'Paid', part: 'Part paid', none: 'Not yet' };
 const MAX = 8;
 
@@ -42,7 +43,7 @@ export function CategoryDonut({ slices, total }: { slices: Slice[]; total: { pla
   let a = 0;
   const geo = shown.map((s) => {
     const span = (s.planned / sum) * Math.PI * 2;
-    const g = { a0: a + gap, a1: a + span - gap, paid: Math.min(1, s.spent / s.planned) };
+    const g = { a0: a + gap, a1: a + span - gap, paid: s.billPaid ? 1 : Math.min(1, s.spent / s.planned) };
     a += span;
     return g;
   });

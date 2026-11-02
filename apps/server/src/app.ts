@@ -10,7 +10,7 @@ import type { BankProvider } from './bank';
 import { registerBankRoutes } from './bank-routes';
 import { registerAgentRoutes } from './agent-routes';
 import type { PayeeClassifier } from './agent';
-import { categorize, linkBills, norm } from './sync';
+import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
 import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
 
 declare module 'fastify' {
@@ -236,9 +236,9 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.get('/api/transactions', async (req) => {
     const q = z.object({ month: monthSchema.optional() }).parse(req.query);
     return db.query(
-      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending, t.flow, t.needs_review, t.confidence
+      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending, t.flow, t.needs_review, t.confidence, t.budget_month
        FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
-       WHERE t.household_id = $1 AND to_char(t.date, 'YYYY-MM') = $2 ORDER BY t.date DESC, t.created_at DESC`,
+       WHERE t.household_id = $1 AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2 ORDER BY t.date DESC, t.created_at DESC`,
       [hid(req), q.month ?? currentMonth()],
     );
   });
@@ -251,6 +251,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     note: z.string().max(500).optional(),
     /** Spending, income, or a transfer between the household's own accounts. */
     flow: z.enum(['spend', 'income', 'transfer']).optional(),
+    /** Count this payment toward a different month (e.g. rent paid early). */
+    budgetMonth: monthSchema.nullable().optional(),
   });
   app.post('/api/transactions', async (req) => {
     const b = txnBody.parse(req.body);
@@ -273,12 +275,13 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     if (b.categoryId !== undefined) { add('category_id', b.categoryId); add('source', 'you'); }
     if (b.note !== undefined) add('note', b.note);
     if (b.flow !== undefined) add('flow', b.flow);
+    if (b.budgetMonth !== undefined) add('budget_month', b.budgetMonth);
     if (b.categoryId !== undefined || b.flow !== undefined) { add('needs_review', false); add('suggested_category_id', null); }
     if (!sets.length) return { ok: true };
     vals.push(id, hid(req));
     const r = await db.query<{ merchant: string }>(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND household_id = $${vals.length} RETURNING merchant`, vals);
     if (!r.length) throw notFound();
-    if (b.categoryId) await linkBills(db, [id]);
+    if (b.categoryId) { await linkBills(db, [id]); await assignBudgetMonths(db, hid(req)); }
     // Teach by example: other unsorted transactions from the same payee follow this choice right away.
     const key = norm(r[0]!.merchant);
     let alsoSorted = 0;

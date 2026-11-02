@@ -87,6 +87,7 @@ export async function syncConnection(db: Db, bank: BankProvider, connectionId: s
     result.agent = agent;
     result.categorized = agent.remembered + agent.model + agent.bank + agent.claude;
     result.review = agent.review;
+    await assignBudgetMonths(db, hid);
     result.learnedDates = await learnDueDates(db, hid);
 
     await db.query("UPDATE bank_connections SET cursor = $1, last_synced_at = now(), status = 'ok', last_error = NULL WHERE id = $2", [cursor, conn.id]);
@@ -143,7 +144,9 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
     const bill = bills.find((b) => {
       // Match on the brand word ("Columbia" in "Columbia Gas"), never generic words like "gas" that a gas station shares.
       const brand = b.name.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-z0-9]+/).find((w) => w.length >= 3 && !GENERIC.has(w));
-      const nameHit = !!brand && key.includes(brand);
+      // Short names may be initials: "AEP" matches "American Electric Power".
+      const initials = t.merchant.toLowerCase().split(/[^a-z]+/).filter(Boolean).map((w) => w[0]).join('');
+      const nameHit = !!brand && (key.includes(brand) || (brand.length <= 4 && initials.includes(brand)));
       const tolerance = b.variable ? 0.6 : 0.25;
       const amountHit = Math.abs(Math.abs(t.amount_cents) - Math.abs(b.amount_cents)) <= Math.abs(b.amount_cents) * tolerance;
       return nameHit && amountHit;
@@ -156,24 +159,65 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
   return n;
 }
 
+const ymOf = (d: string) => d.slice(0, 7);
+const nextYM = (ym: string) => { const [y, m] = ym.split('-').map(Number) as [number, number]; return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
+const dim = (ym: string) => { const [y, m] = ym.split('-').map(Number) as [number, number]; return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
+
 /**
- * Learns the usual day for bills whose date is still an estimate, from at least two matched, posted payments.
- * Uses the median day and records how far payments wander. Dates a person set are never changed here.
+ * A monthly bill paid in the last week of a month for the next one (rent paid on the 31st, due the 1st) counts
+ * toward the next month. That's when the bill is due early in the month, or when this month already has its payment.
+ * Only payments nobody has placed by hand are moved.
+ */
+export async function assignBudgetMonths(db: Db, hid: string): Promise<number> {
+  const rows = await db.query<{ id: string; date: string; schedule_id: string; days: number[]; budget_month: string | null }>(
+    `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.schedule_id, s.days, t.budget_month FROM transactions t JOIN schedules s ON s.id = t.schedule_id
+     WHERE t.household_id = $1 AND s.cadence = 'monthly' AND t.amount_cents < 0 ORDER BY t.date, t.id`, [hid]);
+  const count = new Map<string, number>();
+  const bump = (k: string) => count.set(k, (count.get(k) ?? 0) + 1);
+  // Payments already placed (by hand or earlier runs) count first.
+  for (const r of rows) if (r.budget_month) bump(`${r.schedule_id}|${r.budget_month}`);
+  let moved = 0;
+  for (const r of rows) {
+    if (r.budget_month) continue;
+    const ym = ymOf(r.date);
+    const day = Number(r.date.slice(8, 10));
+    const due = r.days[0] ?? 1;
+    const lateInMonth = day >= dim(ym) - 6;
+    const next = nextYM(ym);
+    if (lateInMonth && (due <= 7 || (count.get(`${r.schedule_id}|${ym}`) ?? 0) > 0) && !(count.get(`${r.schedule_id}|${next}`) ?? 0)) {
+      await db.query('UPDATE transactions SET budget_month = $1 WHERE id = $2', [next, r.id]);
+      bump(`${r.schedule_id}|${next}`);
+      moved++;
+    } else bump(`${r.schedule_id}|${ym}`);
+  }
+  return moved;
+}
+
+/**
+ * Learns the usual day for bills whose date is an estimate (or was learned before), from at least two posted
+ * payments. A payment counted toward the next month reads as an early day (Oct 31 for November = day 0).
+ * Uses the median and records how far payments wander. Dates a person set are never changed here.
  */
 export async function learnDueDates(db: Db, hid: string): Promise<number> {
-  const rows = await db.query<{ schedule_id: string; day: number }>(
-    `SELECT t.schedule_id, EXTRACT(DAY FROM t.date)::int AS day FROM transactions t JOIN schedules s ON s.id = t.schedule_id
-     WHERE t.household_id = $1 AND NOT t.pending AND s.date_source = 'placeholder' AND s.cadence = 'monthly'`, [hid]);
+  const rows = await db.query<{ schedule_id: string; date: string; budget_month: string | null }>(
+    `SELECT t.schedule_id, to_char(t.date, 'YYYY-MM-DD') AS date, t.budget_month FROM transactions t JOIN schedules s ON s.id = t.schedule_id
+     WHERE t.household_id = $1 AND NOT t.pending AND s.date_source IN ('placeholder', 'learned') AND s.cadence = 'monthly' AND t.amount_cents < 0`, [hid]);
   const by = new Map<string, number[]>();
-  for (const r of rows) by.set(r.schedule_id, [...(by.get(r.schedule_id) ?? []), Number(r.day)]);
+  for (const r of rows) {
+    const ym = ymOf(r.date);
+    let day = Number(r.date.slice(8, 10));
+    if (r.budget_month && r.budget_month === nextYM(ym)) day -= dim(ym);
+    by.set(r.schedule_id, [...(by.get(r.schedule_id) ?? []), day]);
+  }
   let n = 0;
   for (const [sid, days] of by) {
     if (days.length < 2) continue;
     const sorted = [...days].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)]!;
-    const window = Math.min(5, Math.max(...sorted.map((d) => Math.abs(d - median))));
-    await db.query("UPDATE schedules SET days = $1, window_days = $2, date_source = 'learned' WHERE id = $3 AND date_source = 'placeholder'", [[median], window, sid]);
-    n++;
+    const due = Math.min(31, Math.max(1, median));
+    const window = Math.min(5, Math.max(...sorted.map((d) => Math.abs(d - due))));
+    const r = await db.query("UPDATE schedules SET days = $1, window_days = $2, date_source = 'learned' WHERE id = $3 AND date_source IN ('placeholder', 'learned') AND (days <> $1 OR window_days <> $2 OR date_source <> 'learned') RETURNING id", [[due], window, sid]);
+    n += r.length;
   }
   return n;
 }

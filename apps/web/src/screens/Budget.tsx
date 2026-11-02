@@ -143,6 +143,18 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   });
   collect(tops, '');
   const day = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const monthName = (ym: string) => new Date(ym + '-15T12:00:00').toLocaleDateString('en-US', { month: 'long' });
+  const shiftYM = (ym: string, n: number) => { const [y, m] = ym.split('-').map(Number) as [number, number]; const i = y * 12 + m - 1 + n; return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`; };
+  /** Payments near a month boundary can be counted toward the neighbouring month (rent paid on the 31st, etc.). */
+  const shiftTarget = (t: Txn): { ym: string; label: string } | null => {
+    const own = t.date.slice(0, 7);
+    if (own !== month) return { ym: own, label: monthName(own) };
+    const d = Number(t.date.slice(8, 10));
+    const last = new Date(Date.UTC(Number(own.slice(0, 4)), Number(own.slice(5, 7)), 0)).getUTCDate();
+    if (d >= last - 6) { const ym = shiftYM(own, 1); return { ym, label: monthName(ym) }; }
+    if (d <= 7) { const ym = shiftYM(own, -1); return { ym, label: monthName(ym) }; }
+    return null;
+  };
 
   const toggleOpen = (n: CategoryNode) => { if (!editing) setOpen((o) => (o === n.id ? null : n.id)); };
   const rowKey = (e: React.KeyboardEvent, n: CategoryNode) => {
@@ -184,7 +196,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
 
         {!isLeaf && (
           <CategoryDonut total={{ planned: rp(n), spent: rs(n) }}
-            slices={n.children.map((c) => ({ id: c.id, name: c.name, planned: rp(c), spent: rs(c) }))} />
+            slices={n.children.map((c) => ({ id: c.id, name: c.name, planned: rp(c), spent: rs(c), billPaid: c.billPaid }))} />
         )}
 
         <div className="bpanel-txns">
@@ -195,7 +207,12 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
             <div key={t.id} className="bpanel-txn">
               <span className="muted" style={{ width: 52 }}>{day(t.date)}</span>
               <span style={{ flex: 1, minWidth: 0 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}
-                {!isLeaf && <span className="muted small"> · {t.category_name}</span>}</span>
+                {!isLeaf && <span className="muted small"> · {t.category_name}</span>}
+                {t.date.slice(0, 7) !== month && <span className="pending-badge" title="Paid early or late; counted toward this month">Counted in {monthName(month)}</span>}</span>
+              {shiftTarget(t) && (
+                <button className="btn sm ghost" style={{ height: 24, padding: '0 6px', color: 'var(--muted)' }} title="Choose which month this payment counts toward"
+                  onClick={() => run(() => api.patch(`/api/transactions/${t.id}`, { budgetMonth: shiftTarget(t)!.ym }))}>Count in {shiftTarget(t)!.label}</button>
+              )}
               <span className={t.amount_cents > 0 ? 'good' : undefined} style={{ fontWeight: 500 }}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
             </div>
           ))}
@@ -292,7 +309,11 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
         </div>
         <span className="c-planned">{plannedCell(n, isTop)}</span>
         <span className="c-spent">{usd(rs(n))}</span>
-        <span className="c-left" style={{ fontWeight: isTop ? 600 : 500 }}><Remaining planned={rp(n)} spent={rs(n)} /></span>
+        <span className="c-left" style={{ fontWeight: isTop ? 600 : 500 }}>
+          {n.billPaid && !n.children.length
+            ? <span className="good" title="This bill changes month to month; its payment has gone out, so it's paid.">Paid{rp(n) !== rs(n) ? ` · ${usd(Math.abs(rp(n) - rs(n)))} ${rp(n) > rs(n) ? 'under' : 'over'}` : ''}</span>
+            : <Remaining planned={rp(n)} spent={rs(n)} />}
+        </span>
         {actions(n, isTop)}
       </div>
       {panel(n, isTop, isTop ? 0 : 14 + (depth - 1) * 24)}
