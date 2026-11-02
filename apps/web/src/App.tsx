@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type ConnectionsView, type Me } from './api';
+import { api, ApiError, notifyChanged, type ConnectionsView, type Me } from './api';
 import { Icon, thisMonth } from './components/ui';
 import { AskHearth } from './components/AskHearth';
 import { Accounts } from './screens/Accounts';
@@ -37,6 +37,29 @@ export function App() {
   const loadMe = () => api.get<Me>('/api/me').then(setMe).catch((e) => { if (e instanceof ApiError && e.status === 401) setMe(null); });
   useEffect(() => { loadMe(); }, []);
   useEffect(() => { if (me) api.get<ConnectionsView>('/api/connections').then(setBank).catch(() => {}); }, [me, tab]);
+  useEffect(() => {
+    const again = () => { if (me) api.get<ConnectionsView>('/api/connections').then(setBank).catch(() => {}); };
+    window.addEventListener('hearth:changed', again);
+    return () => window.removeEventListener('hearth:changed', again);
+  }, [me]);
+  // A bank sync can finish on the server at any time (Plaid's webhook); check every couple of minutes while the
+  // app is open and refresh everything when new data has landed.
+  useEffect(() => {
+    if (!me) return;
+    let seen = '';
+    const check = () => {
+      if (document.visibilityState !== 'visible') return;
+      api.get<ConnectionsView>('/api/connections').then((c) => {
+        const stamp = c.connections.map((x) => x.lastSyncedAt ?? '').join('|');
+        if (seen && stamp !== seen) notifyChanged();
+        seen = stamp;
+        setBank(c);
+      }).catch(() => {});
+    };
+    check();
+    const t = setInterval(check, 120_000);
+    return () => clearInterval(t);
+  }, [me]);
   useEffect(() => {
     const onHash = () => setTab(tabFromHash());
     addEventListener('hashchange', onHash);

@@ -1,5 +1,12 @@
 import type { CategoryNode, ScheduledEvent } from '@hearth/core';
 
+let pending: ReturnType<typeof setTimeout> | null = null;
+/** Tell every loaded view that household data changed (coalesced, so a burst of saves refreshes once). */
+export function notifyChanged() {
+  if (pending) clearTimeout(pending);
+  pending = setTimeout(() => { pending = null; window.dispatchEvent(new Event('hearth:changed')); }, 120);
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
@@ -13,6 +20,8 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? 'Request failed');
+  // Any change anywhere refreshes every number on screen (budget, calendar, paychecks, cash, Today, charts).
+  if (method !== 'GET' && !url.startsWith('/api/assistant') && !url.startsWith('/api/auth')) notifyChanged();
   return data as T;
 }
 

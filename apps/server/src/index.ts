@@ -6,7 +6,7 @@ import { buildApp } from './app';
 import { migrate, openDb } from './db';
 import { seedHousehold, syncStarterPassword } from './seed';
 import { bankFromEnv } from './bank';
-import { ensureMiscCategory } from './services';
+import { ensureMiscCategory, linkPlanCategories, syncScheduleAmounts } from './services';
 import { syncConnection } from './sync';
 import { classifierFromEnv, runAgent } from './agent';
 import { assistantFromEnv } from './assistant';
@@ -28,6 +28,9 @@ const starterPassword = process.env.HEARTH_INITIAL_PASSWORD ?? process.env.HEART
 if (isProd && !starterPassword) console.warn('No HEARTH_INITIAL_PASSWORD set: seeded users will not be able to sign in.');
 await seedHousehold(db, { devPassword: starterPassword });
 await ensureMiscCategory(db);
+await linkPlanCategories(db);
+// Bring bill amounts in line with the budget once at startup (the budget is the source of truth).
+for (const h of await db.query<{ id: string }>('SELECT id FROM households')) await syncScheduleAmounts(db, h.id, householdToday().slice(0, 7) as never);
 const synced = await syncStarterPassword(db, starterPassword);
 if (synced) console.log(`Starter password updated for ${synced} account(s) that haven't chosen their own yet.`);
 

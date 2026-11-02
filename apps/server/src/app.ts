@@ -16,7 +16,7 @@ import type { Assistant } from './assistant';
 import { splitNewWithdrawals } from './cash';
 import type { PayeeClassifier } from './agent';
 import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
-import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned } from './services';
+import { budgetView, calendarView, categoryRows, forecastView, planView, putSetting, setPlanned, syncScheduleAmounts } from './services';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -154,7 +154,11 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
            VALUES ($1,$2,$3,'bill',0,'monthly',$4,$5,$6,'manual',0)`, [newId(), hid(req), name, [b.dueDay], months, id]);
       }
     }
-    if (b.name !== undefined) await db.query('UPDATE categories SET name = $1 WHERE id = $2', [b.name, id]);
+    if (b.name !== undefined) {
+      await db.query('UPDATE categories SET name = $1 WHERE id = $2', [b.name, id]);
+      // Its bill on the calendar and in the paycheck plan carries the new name too.
+      await db.query('UPDATE schedules SET name = $1 WHERE category_id = $2', [b.name, id]);
+    }
     if (b.parentId !== undefined) {
       if (b.parentId) await ownCategory(req, b.parentId);
       const rows = await categoryRows(db, hid(req), b.month ?? currentMonth(), { includeHidden: true });
@@ -167,8 +171,9 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       const kids = await db.query('SELECT 1 FROM categories WHERE parent_id = $1 AND NOT archived LIMIT 1', [id]);
       if (kids.length) throw new HttpError(400, 'Set amounts on the categories inside a parent');
       await setPlanned(db, id, b.month ?? currentMonth(), b.planned);
-      // A seasonal bill's calendar amount follows what's planned for its month.
+      // A seasonal bill's calendar amount follows what's planned for its month; other bills follow the plan too.
       await db.query('UPDATE schedules SET amount_cents = $1 WHERE category_id = $2 AND months IS NOT NULL', [-b.planned, id]);
+      await syncScheduleAmounts(db, hid(req), b.month ?? currentMonth(), id);
     }
     return { ok: true };
   });
@@ -441,7 +446,12 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.put('/api/plan', async (req) => {
     const b = z.object({ strategy: z.enum(['snowball', 'avalanche']).optional(), extra: money.optional() }).parse(req.body);
     if (b.strategy) await db.query('UPDATE loan_plans SET strategy = $1 WHERE household_id = $2', [b.strategy, hid(req)]);
-    if (b.extra !== undefined) await db.query('UPDATE loan_plans SET extra_cents = $1 WHERE household_id = $2', [Math.max(0, b.extra), hid(req)]);
+    if (b.extra !== undefined) {
+      await db.query('UPDATE loan_plans SET extra_cents = $1 WHERE household_id = $2', [Math.max(0, b.extra), hid(req)]);
+      // The budget's extra-on-loans line moves with it, so Budget, Paychecks and Goals agree.
+      const link = (await db.query<{ category_id: string | null }>('SELECT category_id FROM loan_plans WHERE household_id = $1', [hid(req)]))[0]?.category_id;
+      if (link) { await setPlanned(db, link, currentMonth(), Math.max(0, b.extra)); await syncScheduleAmounts(db, hid(req), currentMonth(), link); }
+    }
     return planView(db, hid(req));
   });
 

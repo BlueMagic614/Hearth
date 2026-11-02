@@ -5,7 +5,7 @@ import type { Db } from './db';
 import { leavesFor, runAgent, type PayeeClassifier } from './agent';
 import { HttpError } from './errors';
 import { linkBills } from './sync';
-import { setPlanned } from './services';
+import { setPlanned, syncScheduleAmounts } from './services';
 import { householdToday } from './time';
 
 interface Opts { classifier: PayeeClassifier | null; hid: (req: FastifyRequest) => string }
@@ -88,7 +88,7 @@ export async function registerAgentRoutes(app: FastifyInstance, db: Db, { classi
     }).parse(req.body);
     const own = new Set((await leavesFor(db, hid(req))).map((l) => l.id));
     if (b.items.some((i) => !own.has(i.categoryId))) throw new HttpError(400, 'Unknown category');
-    for (const i of b.items) await setPlanned(db, i.categoryId, b.month, i.amount);
+    for (const i of b.items) { await setPlanned(db, i.categoryId, b.month, i.amount); await syncScheduleAmounts(db, hid(req), b.month as never, i.categoryId); }
     return { ok: true, updated: b.items.length };
   });
 }

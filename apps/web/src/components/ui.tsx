@@ -51,6 +51,24 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[]) {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
+  // Stay current: reload after any change made anywhere in the app, and when the app comes back into view
+  // (e.g. Renee changed something on her phone, or a bank sync ran while this tab was in the background).
+  useEffect(() => {
+    let last = Date.now();
+    const again = () => setTick((t) => t + 1);
+    const back = () => { if (document.visibilityState === 'visible' && Date.now() - last > 15_000) { last = Date.now(); again(); } };
+    const hidden = () => { if (document.visibilityState === 'hidden') last = Date.now(); };
+    window.addEventListener('hearth:changed', again);
+    document.addEventListener('visibilitychange', back);
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('focus', back);
+    return () => {
+      window.removeEventListener('hearth:changed', again);
+      document.removeEventListener('visibilitychange', back);
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('focus', back);
+    };
+  }, []);
   return { data, error, reload: () => setTick((t) => t + 1) };
 }
 

@@ -63,6 +63,42 @@ export async function ensureMiscCategory(db: Db) {
   await db.query("UPDATE categories SET kind = 'misc' WHERE lower(name) IN ('miscellaneous', 'misc') AND kind IS DISTINCT FROM 'misc' AND NOT EXISTS (SELECT 1 FROM categories k WHERE k.parent_id = categories.id)");
 }
 
+/**
+ * Links that keep every screen telling the same story (run at startup and after seeding; only fills gaps):
+ * savings goals ↔ their budget category, and the payoff plan's extra payment ↔ the budget's extra-on-loans line.
+ */
+export async function linkPlanCategories(db: Db) {
+  await db.query(
+    `UPDATE goals g SET category_id = c.id FROM categories c
+     WHERE g.category_id IS NULL AND g.kind = 'save' AND c.household_id = g.household_id AND NOT c.archived AND c.kind = 'savings'
+       AND (lower(c.name) = lower(g.name) OR lower(g.name) LIKE '%' || lower(c.name) || '%' OR lower(c.name) LIKE '%' || lower(g.name) || '%')`);
+  await db.query(
+    `UPDATE loan_plans p SET category_id = c.id FROM categories c
+     WHERE p.category_id IS NULL AND c.household_id = p.household_id AND NOT c.archived AND c.kind = 'debt' AND lower(c.name) LIKE 'extra%'`);
+}
+
+/**
+ * Keeps a category's scheduled bill amount equal to what the budget plans (split across its occurrences, e.g.
+ * $1,400 of tithe = $350 on each of four paydays), so the calendar, forecast and paycheck plan follow the budget.
+ * Without a categoryId it brings every schedule in line with this month's plan.
+ */
+export async function syncScheduleAmounts(db: Db, hid: string, month: YearMonth, categoryId?: string) {
+  const rows = await categoryRows(db, hid, month, { includeHidden: true });
+  const planned = new Map(rows.map((r) => [r.id, r.planned]));
+  const scheds = await db.query<{ id: string; category_id: string; cadence: string; days: number[]; months: number[] | null; amount_cents: number }>(
+    `SELECT id, category_id, cadence, days, months, amount_cents FROM schedules WHERE household_id = $1 AND category_id IS NOT NULL ${categoryId ? 'AND category_id = $2' : ''}`,
+    categoryId ? [hid, categoryId] : [hid]);
+  const byCat = new Map<string, typeof scheds>();
+  for (const s of scheds) byCat.set(s.category_id, [...(byCat.get(s.category_id) ?? []), s]);
+  for (const [cat, list] of byCat) {
+    const p = planned.get(cat);
+    if (!p || list.some((s) => s.months?.length)) continue; // seasonal amounts are set for their own month
+    const occurrences = list.reduce((t, s) => t + (s.cadence === 'semimonthly' ? s.days.length : s.cadence === 'weekly' ? 4 : 1), 0);
+    const each = -Math.round(p / occurrences);
+    for (const s of list) if (s.amount_cents !== each) await db.query('UPDATE schedules SET amount_cents = $1 WHERE id = $2', [each, s.id]);
+  }
+}
+
 export async function monthlyIncome(db: Db, hid: string): Promise<number> {
   const rows = await db.query<{ amount_cents: number; days: number[]; cadence: string }>('SELECT amount_cents, days, cadence FROM income_sources WHERE household_id = $1', [hid]);
   return rows.reduce((s, r) => s + r.amount_cents * (r.cadence === 'semimonthly' ? r.days.length : 1), 0);
@@ -177,13 +213,18 @@ interface IncomeEventRow { id: string; name: string; kind: string; month: string
 /** Loan plan with interest, both strategies compared, and one-time income applied. */
 export async function planView(db: Db, hid: string) {
   const loanRows = await db.query<{ id: string; name: string; balance_cents: number; apr: number; min_payment_cents: number }>('SELECT * FROM loans WHERE household_id = $1 ORDER BY balance_cents', [hid]);
-  const planRow = (await db.query<{ strategy: string; extra_cents: number; start_month: string }>('SELECT * FROM loan_plans WHERE household_id = $1', [hid]))[0];
+  const planRow = (await db.query<{ strategy: string; extra_cents: number; start_month: string; category_id: string | null }>('SELECT * FROM loan_plans WHERE household_id = $1', [hid]))[0];
   const events = await db.query<IncomeEventRow>('SELECT * FROM income_events WHERE household_id = $1 ORDER BY month, name', [hid]);
-  const goals = await db.query<{ id: string; name: string; kind: string; target_cents: number; saved_cents: number; monthly_cents: number; target_month: string | null; horizon: string | null }>(
-    'SELECT * FROM goals WHERE household_id = $1 ORDER BY sort_order', [hid]);
+  const goals = await db.query<{ id: string; name: string; kind: string; target_cents: number; saved_cents: number; monthly_cents: number; target_month: string | null; horizon: string | null; category_id: string | null; put_in: unknown }>(
+    `SELECT g.*, COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = g.category_id AND g.category_id IS NOT NULL), 0) AS put_in
+     FROM goals g WHERE g.household_id = $1 ORDER BY g.sort_order`, [hid]);
 
   const start = planRow?.start_month ?? '2026-11';
-  const extra = planRow?.extra_cents ?? 0;
+  // The extra payment and savings amounts come from the budget, so the plan always matches what's budgeted.
+  const nowMonth = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York', year: 'numeric', month: '2-digit' }).format(new Date()) as YearMonth;
+  const budgetRows = await categoryRows(db, hid, nowMonth, { includeHidden: true });
+  const plannedOf = (id: string | null | undefined) => (id ? budgetRows.find((r) => r.id === id)?.planned : undefined);
+  const extra = plannedOf(planRow?.category_id) ?? planRow?.extra_cents ?? 0;
   const strategy = (planRow?.strategy ?? 'snowball') as Strategy;
   const loans = loanRows.map((l) => ({ id: l.id, name: l.name, balance: l.balance_cents, apr: Number(l.apr), minPayment: l.min_payment_cents }));
   const share = (e: IncomeEventRow, to: 'loans' | 'emergency') => (e.destination === to ? e.amount_cents : e.destination === 'split' ? Math.round(e.amount_cents / 2) : 0);
@@ -212,7 +253,14 @@ export async function planView(db: Db, hid: string) {
   };
   const minimumsOnly = simulatePayoff({ loans, extraMonthly: 0, strategy: 'snowball', rollover: false });
 
-  const goalsOut = goals.map((g) => {
+  // A goal linked to a budget category saves what the budget plans for it, and counts money moved into that category.
+  for (const g of goals) {
+    if (!g.category_id) continue;
+    const p = plannedOf(g.category_id);
+    if (p !== undefined) g.monthly_cents = p;
+    g.saved_cents += Math.max(0, num(g.put_in));
+  }
+  const goalsOut = goals.map(({ put_in: _p, ...g }) => {
     if (g.kind === 'debt') {
       const p = run(strategy, true);
       return { ...g, etaLabel: p.doneLabel };
