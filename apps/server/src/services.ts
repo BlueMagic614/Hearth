@@ -19,6 +19,21 @@ export async function categoryRows(db: Db, hid: string, month: YearMonth): Promi
   return rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid }));
 }
 
+/**
+ * Every household gets a Miscellaneous category (kind 'misc') for one-off expenses. The agent never files
+ * anything there by itself; things land there when a person puts them there, and each gets a tag.
+ */
+export async function ensureMiscCategory(db: Db) {
+  await db.query(
+    `INSERT INTO categories (id, household_id, parent_id, name, kind, sort_order)
+     SELECT gen_random_uuid()::text, h.id, NULL, 'Miscellaneous', 'misc',
+            COALESCE((SELECT MAX(sort_order) + 1 FROM categories c WHERE c.household_id = h.id AND c.parent_id IS NULL), 0)
+     FROM households h
+     WHERE NOT EXISTS (SELECT 1 FROM categories c WHERE c.household_id = h.id AND (c.kind = 'misc' OR lower(c.name) IN ('miscellaneous', 'misc')))`);
+  // A category the household already named Miscellaneous becomes the misc one.
+  await db.query("UPDATE categories SET kind = 'misc' WHERE lower(name) IN ('miscellaneous', 'misc') AND kind IS DISTINCT FROM 'misc' AND NOT EXISTS (SELECT 1 FROM categories k WHERE k.parent_id = categories.id)");
+}
+
 export async function monthlyIncome(db: Db, hid: string): Promise<number> {
   const rows = await db.query<{ amount_cents: number; days: number[]; cadence: string }>('SELECT amount_cents, days, cadence FROM income_sources WHERE household_id = $1', [hid]);
   return rows.reduce((s, r) => s + r.amount_cents * (r.cadence === 'semimonthly' ? r.days.length : 1), 0);

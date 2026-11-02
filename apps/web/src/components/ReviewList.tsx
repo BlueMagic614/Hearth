@@ -5,7 +5,7 @@ import { CategoryPicker } from './CategoryPicker';
 
 export interface ReviewItem {
   id: string; date: string; amount_cents: number; merchant: string; pending: boolean; bank_category: string | null;
-  suggested_category_id: string | null; suggested_name: string | null; confidence: number | null;
+  suggested_category_id: string | null; suggested_name: string | null; confidence: number | null; about?: string | null;
 }
 
 const day = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -60,7 +60,8 @@ export function ReviewList({ options, onChange }: { options: { id: string; label
       {shown.map((t) => (
         <div key={t.id} className="review-row">
           <span className="muted" style={{ width: 52, fontSize: 13 }}>{day(t.date)}</span>
-          <span style={{ flex: '1 1 150px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}{t.count > 1 && <span className="muted small" style={{ fontWeight: 400 }}> · {t.count} purchases since {day(t.first)}</span>}</span>
+          <span style={{ flex: '1 1 150px', fontWeight: 500 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}{t.count > 1 && <span className="muted small" style={{ fontWeight: 400 }}> · {t.count} purchases since {day(t.first)}</span>}
+            {t.about && <span className="about-line">{t.about}</span>}</span>
           <span style={{ width: 88, textAlign: 'right', fontWeight: 500 }} className={t.amount_cents > 0 ? 'good' : undefined} title={t.count > 1 ? 'Latest purchase' : undefined}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
           {t.suggested_category_id && (
             <button className="btn sm accent" disabled={busy} onClick={() => choose(t, t.suggested_category_id!)} title={t.confidence !== null ? `Hearth is about ${Math.round(t.confidence * 100)}% sure` : undefined}>

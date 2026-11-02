@@ -53,8 +53,9 @@ export async function registerAgentRoutes(app: FastifyInstance, db: Db, { classi
   app.get('/api/review', async (req) => {
     const items = await db.query(
       `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.pending, t.bank_category,
-              t.suggested_category_id, c.name AS suggested_name, t.confidence
+              t.suggested_category_id, c.name AS suggested_name, t.confidence, h.about
        FROM transactions t LEFT JOIN categories c ON c.id = t.suggested_category_id
+       LEFT JOIN payee_hints h ON h.household_id = t.household_id AND h.merchant_key = regexp_replace(lower(t.merchant), '[^a-z]', '', 'g')
        WHERE t.household_id = $1 AND t.needs_review AND t.category_id IS NULL ORDER BY t.date DESC LIMIT 300`, [hid(req)]);
     return { count: items.length, items };
   });

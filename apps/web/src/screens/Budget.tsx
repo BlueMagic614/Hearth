@@ -3,6 +3,7 @@ import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView, type Txn } from '../api';
 import { CategoryDonut } from '../components/CategoryDonut';
 import { CategoryPicker } from '../components/CategoryPicker';
+import { TagEditor } from '../components/TagEditor';
 import { leafOptions } from './Transactions';
 import { SpendingSuggestions } from '../components/SpendingSuggestions';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
@@ -152,6 +153,8 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const shiftTarget = (t: Txn): { ym: string; label: string } | null => {
     const own = t.date.slice(0, 7);
     if (own !== month) return { ym: own, label: monthName(own) };
+    // Only bills get paid ahead or late; everyday spending stays in the month it happened.
+    if (!['bill', 'debt', 'giving', 'savings'].includes(t.category_kind ?? '')) return null;
     const d = Number(t.date.slice(8, 10));
     const last = new Date(Date.UTC(Number(own.slice(0, 4)), Number(own.slice(5, 7)), 0)).getUTCDate();
     if (d >= last - 6) { const ym = shiftYM(own, 1); return { ym, label: monthName(ym) }; }
@@ -202,6 +205,20 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
             slices={n.children.map((c) => ({ id: c.id, name: c.name, planned: rp(c), spent: rs(c), billPaid: c.billPaid }))} />
         )}
 
+        {n.kind === 'misc' && list.length > 0 && (() => {
+          // One-off expenses grouped by tag, biggest first.
+          const by = new Map<string, number>();
+          for (const t of list) by.set(t.tag || 'Untagged', (by.get(t.tag || 'Untagged') ?? 0) - t.amount_cents);
+          return (
+            <div className="misc-tags">
+              <div className="small muted" style={{ marginBottom: 4 }}>Unexpected and one-off this month, by tag</div>
+              {[...by.entries()].sort((a, b) => b[1] - a[1]).map(([tag, cents]) => (
+                <div key={tag} className="misc-tag-row"><span className={tag === 'Untagged' ? 'muted' : undefined}>{tag}</span><span style={{ fontWeight: 500 }}>{usd(cents, true)}</span></div>
+              ))}
+            </div>
+          );
+        })()}
+
         <div className="bpanel-txns">
           <div className="small muted" style={{ marginBottom: 4 }}>
             {list.length ? `${list.length} transaction${list.length === 1 ? '' : 's'} in ${new Date(month + '-15').toLocaleDateString('en-US', { month: 'long' })} · ${usd(total, true)}` : `Nothing paid from ${n.name} yet this month.`}
@@ -211,6 +228,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
               <span className="muted" style={{ width: 52 }}>{day(t.date)}</span>
               <span style={{ flex: 1, minWidth: 0 }}>{t.merchant}{t.pending && <span className="pending-badge">Pending</span>}
                 {!isLeaf && <span className="muted small"> · {t.category_name}</span>}
+                {t.category_kind === 'misc' && <> <TagEditor id={t.id} tag={t.tag} source={t.tag_source} onSaved={reload} /></>}
                 {t.date.slice(0, 7) !== month && <span className="pending-badge" title="Paid early or late; counted toward this month">Counted in {monthName(month)}</span>}</span>
               {shiftTarget(t) && (
                 <button className="btn sm ghost" style={{ height: 24, padding: '0 6px', color: 'var(--muted)' }} title="Choose which month this payment counts toward"

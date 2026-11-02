@@ -236,8 +236,10 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
   app.get('/api/transactions', async (req) => {
     const q = z.object({ month: monthSchema.optional() }).parse(req.query);
     return db.query(
-      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending, t.flow, t.needs_review, t.confidence, t.budget_month
+      `SELECT t.id, to_char(t.date, 'YYYY-MM-DD') AS date, t.amount_cents, t.merchant, t.category_id, c.name AS category_name, t.source, t.note, t.pending, t.flow, t.needs_review, t.confidence, t.budget_month,
+              t.tag, t.tag_source, c.kind AS category_kind, h.about
        FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
+       LEFT JOIN payee_hints h ON h.household_id = t.household_id AND h.merchant_key = regexp_replace(lower(t.merchant), '[^a-z]', '', 'g')
        WHERE t.household_id = $1 AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2 ORDER BY t.date DESC, t.created_at DESC`,
       [hid(req), q.month ?? currentMonth()],
     );
@@ -253,6 +255,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     flow: z.enum(['spend', 'income', 'transfer']).optional(),
     /** Count this payment toward a different month (e.g. rent paid early). */
     budgetMonth: monthSchema.nullable().optional(),
+    /** Label for a one-off expense in Miscellaneous ("Car repair"). */
+    tag: z.string().trim().max(40).nullable().optional(),
   });
   app.post('/api/transactions', async (req) => {
     const b = txnBody.parse(req.body);
@@ -276,6 +280,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     if (b.note !== undefined) add('note', b.note);
     if (b.flow !== undefined) add('flow', b.flow);
     if (b.budgetMonth !== undefined) add('budget_month', b.budgetMonth);
+    if (b.tag !== undefined) { add('tag', b.tag || null); add('tag_source', b.tag ? 'you' : null); }
     if (b.categoryId !== undefined || b.flow !== undefined) { add('needs_review', false); add('suggested_category_id', null); }
     if (!sets.length) return { ok: true };
     vals.push(id, hid(req));
@@ -308,7 +313,18 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       if (fixed.length) { await linkBills(db, fixed.map((f) => f.id)); await assignBudgetMonths(db, hid(req)); }
       alsoSorted += fixed.length;
     }
-    return { ok: true, alsoSorted };
+    // Something put into Miscellaneous gets a suggested tag from Claude (when set up) unless it already has one.
+    let tag: string | null = null;
+    if (b.categoryId && opts.classifier?.suggestTag) {
+      const t = (await db.query<{ merchant: string; amount_cents: number; date: string; tag: string | null; kind: string | null; about: string | null }>(
+        `SELECT t.merchant, t.amount_cents, to_char(t.date, 'YYYY-MM-DD') AS date, t.tag, c.kind, h.about FROM transactions t JOIN categories c ON c.id = t.category_id
+         LEFT JOIN payee_hints h ON h.household_id = t.household_id AND h.merchant_key = regexp_replace(lower(t.merchant), '[^a-z]', '', 'g') WHERE t.id = $1`, [id]))[0];
+      if (t && t.kind === 'misc' && !t.tag) {
+        tag = await opts.classifier.suggestTag({ merchant: t.merchant, amount: t.amount_cents, about: t.about, date: t.date }).catch(() => null);
+        if (tag) await db.query("UPDATE transactions SET tag = $1, tag_source = 'ai' WHERE id = $2", [tag, id]);
+      }
+    }
+    return { ok: true, alsoSorted, tag };
   });
   app.delete('/api/transactions/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);

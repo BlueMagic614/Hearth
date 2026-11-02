@@ -152,11 +152,19 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
     // What the household did with this payee before. If it went to more than one category, the past payment
     // closest in amount decides.
     const priors = await db.query<{ category_id: string; schedule_id: string | null; amount_cents: number }>(
-      `SELECT category_id, schedule_id, amount_cents FROM transactions WHERE household_id = $1 AND id <> $2 AND category_id IS NOT NULL AND source IN ('you','rule','manual')
-         AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $3 ORDER BY (source = 'you') DESC, date DESC LIMIT 30`, [hid, t.id, key]);
-    const prior = new Set(priors.map((p) => p.category_id)).size > 1
+      `SELECT t.category_id, t.schedule_id, t.amount_cents FROM transactions t JOIN categories c ON c.id = t.category_id
+       WHERE t.household_id = $1 AND t.id <> $2 AND t.source IN ('you','rule','manual') AND c.kind IS DISTINCT FROM 'misc'
+         AND regexp_replace(lower(t.merchant), '[^a-z]', '', 'g') = $3 ORDER BY (t.source = 'you') DESC, t.date DESC LIMIT 30`, [hid, t.id, key]);
+    let prior = new Set(priors.map((p) => p.category_id)).size > 1
       ? [...priors].sort((a, b) => diff(t.amount_cents, a.amount_cents) - diff(t.amount_cents, b.amount_cents))[0]
       : priors[0];
+    // Memory only covers amounts like the ones seen before: $4.50 at the station where you always buy $40 of gas
+    // is probably something else, so the agent takes a fresh look.
+    if (prior && priors.length >= 2 && new Set(priors.map((p) => p.category_id)).size === 1) {
+      const seen = priors.map((p) => Math.abs(p.amount_cents));
+      const a = Math.abs(t.amount_cents);
+      if (a < Math.min(...seen) * 0.35 || a > Math.max(...seen) * 3) prior = undefined;
+    }
 
     // A matching bill beats memory that points at a different bill (memory can't see amounts); memory wins otherwise.
     const useBill = bill?.category_id && (!prior || prior.category_id === bill.category_id || billCats.has(prior.category_id));

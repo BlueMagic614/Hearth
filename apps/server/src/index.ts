@@ -6,6 +6,7 @@ import { buildApp } from './app';
 import { migrate, openDb } from './db';
 import { seedHousehold, syncStarterPassword } from './seed';
 import { bankFromEnv } from './bank';
+import { ensureMiscCategory } from './services';
 import { syncConnection } from './sync';
 import { classifierFromEnv, runAgent } from './agent';
 import { householdToday } from './time';
@@ -25,6 +26,7 @@ const isProd = process.env.NODE_ENV === 'production';
 const starterPassword = process.env.HEARTH_INITIAL_PASSWORD ?? process.env.HEARTH_DEV_PASSWORD ?? (isProd ? undefined : 'hearth-dev-password');
 if (isProd && !starterPassword) console.warn('No HEARTH_INITIAL_PASSWORD set: seeded users will not be able to sign in.');
 await seedHousehold(db, { devPassword: starterPassword });
+await ensureMiscCategory(db);
 const synced = await syncStarterPassword(db, starterPassword);
 if (synced) console.log(`Starter password updated for ${synced} account(s) that haven't chosen their own yet.`);
 

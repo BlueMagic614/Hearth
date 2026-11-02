@@ -265,3 +265,15 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .picker-list li.special + li:not(.special) { border-top: 1px solid var(--line-2); margin-top: 3px; padding-top: 9px; }
 .picker-empty { color: var(--muted); cursor: default !important; }
 @media (max-width: 560px) { .bpanel-txn { flex-wrap: wrap; } .bpanel-txn .picker { order: 5; flex: 1 1 100% !important; width: auto !important; } }
+
+/* Tags on one-off expenses, and what a payee is */
+.tag-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; margin-left: 6px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--surface); font-size: 12px; font-weight: 500; color: var(--ink-2); cursor: pointer; vertical-align: middle; }
+.tag-chip:hover { border-color: var(--accent); }
+.tag-chip.ai { border-style: dashed; }
+.tag-ai { font-weight: 400; color: var(--muted); font-size: 11px; }
+.tag-input { width: 160px; height: 26px !important; font-size: 12px; }
+.tag-input.prompt { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.about-line { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.misc-tags { display: grid; gap: 2px; max-width: 420px; }
+.misc-tag-row { display: flex; justify-content: space-between; padding: 5px 0; border-top: 1px solid var(--line-2); font-size: 13px; }

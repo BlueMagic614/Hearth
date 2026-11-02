@@ -1,3 +1,4 @@
+import { ensureMiscCategory } from './services';
 import { randomUUID } from 'node:crypto';
 import { toCents } from '@hearth/core';
 import type { Db } from './db';
@@ -156,5 +157,6 @@ export async function seedHousehold(db: Db, opts: { jasonEmail?: string; reneeEm
 
     await t.query("INSERT INTO settings (household_id, key, value) VALUES ($1, 'variable_bill_leftover', '\"emergency\"')", [hid]);
   });
+  await ensureMiscCategory(db);
   return hid;
 }

@@ -171,8 +171,8 @@ describe('Claude request', () => {
     expect(sent?.model).toBe('claude-haiku-5-5');
     expect(sent?.tool_choice).toEqual({ type: 'tool', name: 'assign_categories' });
     expect(sent?.messages[0]!.content).not.toMatch(/balance|account/i);
-    expect(out.get('kroger')).toEqual({ categoryId: 'cat-g', confidence: 0.9 });
-    expect(out.get('aldi')).toEqual({ categoryId: null, confidence: 0 });
+    expect(out.get('kroger')).toEqual({ categoryId: 'cat-g', confidence: 0.9, about: null });
+    expect(out.get('aldi')).toEqual({ categoryId: null, confidence: 0, about: null });
   });
 });
 
