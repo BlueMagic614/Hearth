@@ -9,6 +9,7 @@ export interface Half { id: string; from: string; to: string; first: Check; seco
 export interface PaycheckView {
   month: string; halves: Half[]; payers: Record<string, string>;
   unscheduled: { categoryId: string; name: string; amount: number; kind: string | null }[];
+  assigned: { categoryId: string; name: string; amount: number; kind: string | null; payDay: number }[];
   paydays: { person: string; day: number; amount: number }[];
 }
 
@@ -125,24 +126,72 @@ export function PaycheckPlan({ month }: { month: string }) {
         );
       })}
 
-      {p.unscheduled.length > 0 && (
-        <div className="card">
-          <h2 style={{ marginBottom: 4 }}>Not tied to a check yet
-            <Tip label="About unscheduled items" text="Monthly money with no date: savings moves and extra debt payments. Choose which check pays for each and it comes out of that check every month (it also shows on the calendar). Until then the plan counts it as left over." />
-          </h2>
-          {p.unscheduled.map((u) => (
-            <div key={u.categoryId} className="list-row">
-              <span style={{ flex: 1 }}>{u.name}</span>
-              <span style={{ width: 90, textAlign: 'right', fontWeight: 500 }}>{usd(u.amount)}</span>
-              <select className="input sm" style={{ width: 'auto' }} value="" aria-label={`Which check pays ${u.name}`}
-                onChange={(e) => e.target.value && api.post('/api/paychecks/assign', { categoryId: u.categoryId, payDay: Number(e.target.value) }).then(plan.reload)}>
-                <option value="">Pay from…</option>
-                {p.paydays.map((d) => <option key={`${d.person}${d.day}`} value={d.day}>{d.person}'s {ord(d.day)} check</option>)}
-              </select>
+      <SavingsPlacement p={p} onChange={plan.reload} />
+    </div>
+  );
+}
+
+interface Proposal { placements: { categoryId: string; name: string; amount: number; payDay: number; person: string; reason: string }[]; after: { half: string; from: string; leftAtEnd: number; firstCheckAlone: number }[] }
+
+/**
+ * Savings moves and extra debt payments: which check pays each. Hearth can decide, balancing the halves and keeping
+ * the first check of each half free for bills; the proposal is shown first and saved only on Apply.
+ */
+function SavingsPlacement({ p, onChange }: { p: PaycheckView; onChange: () => void }) {
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const items = [...p.unscheduled.map((u) => ({ ...u, payDay: null as number | null })), ...p.assigned];
+  if (!items.length) return null;
+  const who = (day: number) => p.paydays.find((d) => d.day === day);
+  const decide = async (apply: boolean) => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.post<Proposal>('/api/paychecks/auto', { month: p.month, apply });
+      if (apply) { setProposal(null); onChange(); } else setProposal(r);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card stack">
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+        <h2 style={{ flex: '1 1 220px' }}>Savings & extra payments
+          <Tip label="About savings and extra payments" text="Monthly money with no bill date: savings moves and extra debt payments. Each comes out of one check every month. Let Hearth decide, or pick a check yourself. Anything not tied to a check is counted as left over, so the halves look better off than they are." />
+        </h2>
+        <button className="btn accent sm" disabled={busy} onClick={() => decide(false)}>{busy && !proposal ? 'Working it out…' : p.unscheduled.length ? 'Let Hearth decide' : 'Re-balance'}</button>
+      </div>
+      {err && <div className="notice warn">{err}</div>}
+
+      {proposal && (
+        <div className="proposal">
+          <div className="small muted">Hearth suggests (nothing changes until you apply):</div>
+          {proposal.placements.map((x) => (
+            <div key={x.categoryId} className="proposal-row">
+              <div><b>{x.name}</b> {usd(x.amount)} → <b>{x.person}'s {ord(x.payDay)}</b> check</div>
+              <div className="small muted">{x.reason}</div>
             </div>
           ))}
+          <div className="small" style={{ marginTop: 6 }}>
+            Then each half ends with: {proposal.after.map((a) => `${a.half} ${a.leftAtEnd < 0 ? `short ${usd(-a.leftAtEnd)}` : usd(a.leftAtEnd)}`).join(' · ')}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn accent sm" disabled={busy} onClick={() => decide(true)}>Apply</button>
+            <button className="btn ghost sm" onClick={() => setProposal(null)}>Not now</button>
+          </div>
         </div>
       )}
+
+      {items.map((u) => (
+        <div key={u.categoryId} className="list-row">
+          <span style={{ flex: 1 }}>{u.name}{u.payDay === null && <span className="pending-badge due-badge">not tied to a check</span>}</span>
+          <span style={{ width: 90, textAlign: 'right', fontWeight: 500 }}>{usd(u.amount)}</span>
+          <select className="input sm" style={{ width: 'auto' }} value={u.payDay ?? ''} aria-label={`Which check pays ${u.name}`}
+            onChange={(e) => e.target.value && api.post('/api/paychecks/assign', { categoryId: u.categoryId, payDay: Number(e.target.value) }).then(onChange)}>
+            {u.payDay === null && <option value="">Pay from…</option>}
+            {p.paydays.map((d) => <option key={`${d.person}${d.day}`} value={d.day}>{d.person}'s {ord(d.day)} check</option>)}
+            {u.payDay !== null && !who(u.payDay) && <option value={u.payDay}>Day {u.payDay}</option>}
+          </select>
+        </div>
+      ))}
     </div>
   );
 }

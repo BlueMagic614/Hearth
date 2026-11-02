@@ -397,3 +397,6 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .eq-line.minus { color: var(--ink-2); }
 .eq-line.total, .eq-line.good, .eq-line.bad { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; font-weight: 600; }
 .eq-line.good .num { color: var(--accent-ink); } .eq-line.bad .num { color: var(--warn-ink); }
+
+.proposal { display: grid; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--accent-wash); }
+.proposal-row { display: grid; gap: 2px; font-size: 14px; }

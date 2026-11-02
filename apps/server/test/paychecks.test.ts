@@ -74,3 +74,26 @@ describe('paycheck plan in halves', () => {
     expect(after.payers[ef.categoryId]).toBe("Renee's and Jason's pooled checks (Nov 10 + 13)");
   });
 });
+
+describe('letting Hearth decide', () => {
+  it('previews placements for savings and extra debt, balanced across halves, from the second check of a half', async () => {
+    // Undo the earlier manual assignment so everything is up for grabs.
+    const r = (await api('POST', '/api/paychecks/auto', { month: '2026-11' })).body as { placements: { name: string; payDay: number; person: string; reason: string }[]; after: { half: string; leftAtEnd: number; firstCheckAlone: number }[]; applied: boolean };
+    expect(r.applied).toBe(false);
+    expect(r.placements.map((p) => p.name).sort()).toEqual(['Christmas & holidays', 'Emergency fund', 'Extra on student loans', 'Vacation']);
+    // Same half either way, so the later payday wins: Renee's check stays free for bills until Jason is paid.
+    expect(r.placements.every((p) => p.payDay === 15 || p.payDay === 30)).toBe(true);
+    expect(r.placements.every((p) => p.reason.length > 20)).toBe(true);
+    // The budget gives every dollar a job, so halves land near zero; none should be meaningfully short.
+    const nets = r.after.map((a) => a.leftAtEnd);
+    expect(Math.min(...nets)).toBeGreaterThan(-10000);
+    expect(new Set(r.placements.map((p) => p.payDay)).size).toBe(2);
+  });
+
+  it('applies the placements when asked', async () => {
+    await api('POST', '/api/paychecks/auto', { month: '2026-11', apply: true });
+    const after = await plan();
+    expect(after.unscheduled).toEqual([]);
+    expect(Object.keys(after.payers).length).toBeGreaterThan(0);
+  });
+});

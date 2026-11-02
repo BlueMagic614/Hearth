@@ -1,4 +1,4 @@
-import { addDays, addMonths, daysInMonth, eventsForMonth, type ISODate, type ScheduledEvent, type YearMonth } from '@hearth/core';
+import { addDays, addMonths, daysInMonth, eventsForMonth, type ISODate, type Schedule, type ScheduledEvent, type YearMonth } from '@hearth/core';
 import type { Db } from './db';
 import { categoryRows, overridesFor, schedulesFor } from './services';
 
@@ -35,15 +35,19 @@ export interface Half {
 
 const ym = (d: string) => d.slice(0, 7) as YearMonth;
 
-export async function paycheckPlan(db: Db, hid: string, month: YearMonth) {
-  const [schedules, overrides] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid)]);
+/**
+ * opts.without drops schedules and opts.virtual adds pretend ones, so placements can be tried without saving them.
+ */
+export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: { without?: Set<string>; virtual?: Schedule[]; cache?: Map<string, unknown> } = {}) {
+  const [all, overrides] = await Promise.all([schedulesFor(db, hid), overridesFor(db, hid)]);
+  const schedules = [...all.filter((s) => !opts.without?.has(s.id)), ...(opts.virtual ?? [])];
   const months = [addMonths(month, -1), month, addMonths(month, 1), addMonths(month, 2)];
   const events = months.flatMap((m) => eventsForMonth(schedules, m, overrides));
   const pays = events.filter((e) => e.kind === 'pay').sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   const out = events.filter((e) => e.kind !== 'pay');
 
   // A bill's budgeted amount usually knows better than its schedule (it's what was planned this month).
-  const rowsBy = new Map<string, Awaited<ReturnType<typeof categoryRows>>>();
+  const rowsBy = (opts.cache ?? new Map()) as Map<string, Awaited<ReturnType<typeof categoryRows>>>;
   const rowsFor = async (m: YearMonth) => { if (!rowsBy.has(m)) rowsBy.set(m, await categoryRows(db, hid, m, { includeHidden: true })); return rowsBy.get(m)!; };
   const perCategory = new Map<string, number>();
   for (const s of schedules) if (s.categoryId) perCategory.set(s.categoryId, (perCategory.get(s.categoryId) ?? 0) + (s.cadence === 'monthly' ? 1 : (s.days?.length ?? 2)));
@@ -72,7 +76,8 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth) {
   }
 
   // Which paydays start a half: pair the paydays by day of the month, first with second, third with fourth.
-  const rawDays = [...new Set(pays.map((e) => Number(e.originalDate.slice(8, 10))))].sort((a, b) => a - b);
+  // From the pay schedules themselves (not the dates they produce: February turns the 30th into the 28th).
+  const rawDays = [...new Set(schedules.filter((x) => x.kind === 'pay').flatMap((x) => x.days ?? []))].sort((a, b) => a - b);
   const starts = new Set(rawDays.filter((_, i) => i % 2 === 0));
   const isStart = (e: ScheduledEvent) => starts.has(Number(e.originalDate.slice(8, 10)));
   const person = (e: ScheduledEvent) => e.name.replace(/^Payday — /, '');
@@ -138,7 +143,13 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth) {
     .filter((r) => !parents.has(r.id) && !r.cash && r.planned > 0 && !scheduled.has(r.id) && r.kind !== 'everyday' && r.kind !== 'misc')
     .map((r) => ({ categoryId: r.id, name: r.name, amount: r.planned, kind: r.kind }));
 
-  return { month, halves: shown, unscheduled };
+  // Savings moves and extra payments already tied to a check (tithe aside): these can be re-placed too.
+  const kinds = new Map(rows.map((r) => [r.id, r.kind ?? null]));
+  const assigned = schedules
+    .filter((s) => s.onPayday && s.categoryId && kinds.get(s.categoryId) !== 'giving' && s.cadence === 'monthly' && !s.id.startsWith('virtual'))
+    .map((s) => ({ scheduleId: s.id, categoryId: s.categoryId!, name: rows.find((r) => r.id === s.categoryId)?.name ?? s.name, amount: rows.find((r) => r.id === s.categoryId)?.planned || -s.amount, kind: kinds.get(s.categoryId!) ?? null, payDay: s.days?.[0] ?? 1 }));
+
+  return { month, halves: shown, unscheduled, assigned };
 }
 
 const short = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -151,4 +162,88 @@ export function payerByCategory(plan: Awaited<ReturnType<typeof paycheckPlan>>) 
     for (const i of h.step2?.items ?? []) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${h.first.person}'s and ${h.second!.person}'s pooled checks (${short(h.first.payDate)} + ${short(h.second!.payDate).replace(/^\w+ /, '')})`;
   }
   return out;
+}
+
+// ---------- Letting Hearth decide which check pays savings and extra debt ----------
+
+export interface Placement { categoryId: string; name: string; amount: number; payDay: number; person: string; reason: string }
+
+const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th'}`;
+const money = (c: number) => `$${Math.ceil(Math.abs(c) / 100).toLocaleString('en-US')}`;
+
+/**
+ * Places each savings move and extra debt payment on a payday. Biggest first, each goes where the plan stays
+ * healthiest, judged on this month and next without carry-over (so each half stands on its own):
+ *   1. the smallest "left at the end of a half" is as large as possible (halves stay balanced);
+ *   2. then the first check of each half keeps the most room to reach the second payday;
+ *   3. then the later payday, so bills come first and saving happens from what's left.
+ */
+export async function autoPlace(db: Db, hid: string, month: YearMonth) {
+  const base = await paycheckPlan(db, hid, month);
+  const items = [...base.unscheduled.map((u) => ({ ...u, scheduleId: null as string | null })), ...base.assigned.map((a) => ({ ...a }))]
+    .filter((i) => i.amount > 0).sort((a, b) => b.amount - a.amount);
+  const without = new Set(base.assigned.map((a) => a.scheduleId));
+  const paydays = (await db.query<{ person: string; days: number[] }>('SELECT person, days FROM income_sources WHERE household_id = $1', [hid]))
+    .flatMap((r) => r.days.map((d) => ({ person: r.person, day: d }))).sort((a, b) => a.day - b.day);
+  const cache = new Map<string, unknown>();
+  const next = addMonths(month, 1);
+
+  const virtual = (i: (typeof items)[number], day: number): Schedule => ({
+    id: `virtual-${i.categoryId}`, name: i.name, kind: i.kind === 'savings' ? 'save' : 'bill', amount: -i.amount, cadence: 'monthly', days: [day],
+    weekendRule: 'before', categoryId: i.categoryId, onPayday: true, dateSource: 'manual', windowDays: 0,
+  });
+  const evaluate = async (placed: Schedule[]) => {
+    const plans = await Promise.all([month, next].map((m) => paycheckPlan(db, hid, m, { without, virtual: placed, cache })));
+    const halves = new Map(plans.flatMap((p) => p.halves).map((h) => [h.id, h]));
+    const list = [...halves.values()].filter((h) => h.from >= `${month}-01`);
+    const nets = list.map((h) => ({ label: `${ordinal(Number(h.first.payDate.slice(8)))}–${ordinal(Number(h.to.slice(8)))}`, net: h.income - h.outflow, alone: h.step1.leaves, h }));
+    return { nets, minNet: Math.min(...nets.map((n) => n.net)), minAlone: Math.min(...nets.map((n) => n.alone)) };
+  };
+
+  const before = await evaluate([]);
+  const chosen: Schedule[] = [];
+  const placements: Placement[] = [];
+  for (const item of items) {
+    let best: { day: number; person: string; score: [number, number, number]; result: Awaited<ReturnType<typeof evaluate>> } | null = null;
+    for (let k = 0; k < paydays.length; k++) {
+      const p = paydays[k]!;
+      const result = await evaluate([...chosen, virtual(item, p.day)]);
+      const score: [number, number, number] = [result.minNet, Math.min(0, result.minAlone), k];
+      if (!best || score[0] > best.score[0] || (score[0] === best.score[0] && (score[1] > best.score[1] || (score[1] === best.score[1] && score[2] > best.score[2])))) {
+        best = { day: p.day, person: p.person, score, result };
+      }
+    }
+    chosen.push(virtual(item, best!.day));
+    const tight = [...best!.result.nets].sort((a, b) => a.net - b.net)[0]!;
+    const own = best!.result.nets.find((n) => n.h.step1.items.concat(n.h.step2?.items ?? []).some((x) => x.categoryId === item.categoryId));
+    const isSecond = paydays.findIndex((p) => p.day === best!.day) % 2 === 1;
+    placements.push({
+      categoryId: item.categoryId, name: item.name, amount: item.amount, payDay: best!.day, person: best!.person,
+      reason: `${own ? `The ${own.label} half has room (${money(own.net)} left after it)` : 'Keeps both halves balanced'}`
+        + `${isSecond ? `, and coming from ${best!.person}'s check keeps ${paydays[paydays.findIndex((p) => p.day === best!.day) - 1]?.person ?? 'the first'}'s check free to cover bills until payday` : ''}.`
+        + `${tight.net < 0 ? ` Even so, the ${tight.label} half comes up ${money(tight.net)} short.` : ''}`,
+    });
+  }
+  const after = chosen.length ? await evaluate(chosen) : before;
+  const summary = (r: typeof before) => r.nets.map((n) => ({ half: n.label, from: n.h.first.payDate, leftAtEnd: n.net, firstCheckAlone: n.alone }));
+  return { placements, before: summary(before), after: summary(after) };
+}
+
+/** Ties a monthly item to a payday (savings move, extra debt payment), creating or updating its schedule. */
+export async function assignToCheck(db: Db, hid: string, categoryId: string, payDay: number, newId: () => string) {
+  const cat = (await db.query<{ id: string; name: string; kind: string | null; planned: number | null }>(
+    `SELECT c.id, c.name, c.kind, (SELECT planned_cents FROM budgets b WHERE b.category_id = c.id ORDER BY month DESC LIMIT 1) AS planned
+     FROM categories c WHERE c.id = $1 AND c.household_id = $2 AND NOT c.archived`, [categoryId, hid]))[0];
+  if (!cat) return 'missing' as const;
+  const existing = (await db.query<{ id: string }>('SELECT id FROM schedules WHERE category_id = $1', [cat.id]))[0];
+  if (existing) {
+    await db.query("UPDATE schedules SET days = $1, cadence = 'monthly', on_payday = TRUE, date_source = 'manual', window_days = 0 WHERE id = $2", [[payDay], existing.id]);
+  } else {
+    if (!cat.planned) return 'no-amount' as const;
+    await db.query(
+      `INSERT INTO schedules (id, household_id, name, kind, amount_cents, cadence, days, weekend_rule, category_id, date_source, window_days, on_payday)
+       VALUES ($1,$2,$3,$4,$5,'monthly',$6,'before',$7,'manual',0,TRUE)`,
+      [newId(), hid, cat.name, cat.kind === 'savings' ? 'save' : 'bill', -cat.planned, [payDay], cat.id]);
+  }
+  return 'ok' as const;
 }
