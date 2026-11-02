@@ -1,25 +1,64 @@
+import { useState } from 'react';
 import { api } from '../api';
 import { Tip, todayISO, usd, useLoad } from './ui';
 
 export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean }
-export interface Period { id: string; person: string; payDate: string; amount: number; from: string; to: string; items: PlanItem[]; outflow: number; surplus: number; carryIn: number; short: number }
+interface Check { person: string; payDate: string; amount: number }
+interface Step { from: string; to: string; items: PlanItem[]; outflow: number; leaves: number }
+export interface Half { id: string; from: string; to: string; first: Check; second: Check | null; step1: Step; step2: (Step & { pool: number }) | null; carryIn: number; income: number; outflow: number; end: number }
 export interface PaycheckView {
-  month: string; periods: Period[]; payers: Record<string, string>;
+  month: string; halves: Half[]; payers: Record<string, string>;
   unscheduled: { categoryId: string; name: string; amount: number; kind: string | null }[];
   paydays: { person: string; day: number; amount: number }[];
 }
 
 const fmt = (d: string, o: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', o);
+const wk = (d: string) => fmt(d, { weekday: 'short', month: 'short', day: 'numeric' });
 const ord = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th'}`;
+const signed = (c: number) => (c < 0 ? `−${usd(-c)}` : usd(c));
 
-/** The check paying for today, if any, from a plan. */
-export function currentPeriod(plan: PaycheckView | null | undefined, today = todayISO()) {
-  return plan?.periods.find((p) => today >= p.payDate && today <= p.to) ?? null;
+/** The half (and step) of the month we're living in today. */
+export function currentHalf(plan: PaycheckView | null | undefined, today = todayISO()) {
+  const h = plan?.halves.find((x) => today >= x.first.payDate && today <= x.to);
+  if (!h) return null;
+  const step = h.second && today >= h.second.payDate ? 2 : 1;
+  return { half: h, step };
+}
+
+function Items({ items, today }: { items: PlanItem[]; today: string }) {
+  const [open, setOpen] = useState(false);
+  const bills = items.filter((i) => i.kind === 'bill' || i.kind === 'save').length;
+  return (
+    <div>
+      <button className="btn sm ghost" style={{ padding: 0, height: 'auto', color: 'var(--accent)' }} onClick={() => setOpen(!open)} aria-expanded={open}>
+        {open ? 'Hide the list' : `Show what's in it (${bills} bill${bills === 1 ? '' : 's'}${items.some((i) => i.kind === 'cash') ? ' + cash' : ''})`}
+      </button>
+      {open && (
+        <ul className="pay-items">
+          {items.map((i, k) => (
+            <li key={k} className={i.date < today && i.kind !== 'cash' && i.kind !== 'card' ? 'done' : undefined}>
+              <span className="muted">{i.kind === 'cash' || i.kind === 'card' ? '' : fmt(i.date)}</span>
+              <span>{i.name}{i.variable && i.kind === 'bill' && <span className="muted small"> · varies</span>}{i.kind === 'save' && <span className="pending-badge cash-badge">saving</span>}</span>
+              <span className="num">{usd(i.amount)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Line({ label, value, kind }: { label: string; value: string; kind?: 'minus' | 'total' | 'good' | 'bad' }) {
+  return (
+    <div className={'eq-line' + (kind ? ` ${kind}` : '')}>
+      <span>{label}</span><span className="num">{value}</span>
+    </div>
+  );
 }
 
 /**
- * Money by paycheck: each check covers what's due after it through the next payday (a bill due on a payday is
- * paid by the check before; tithe and savings moves come out of that day's check).
+ * The month in two halves, the way the household runs it: Renee's check alone until Jason's payday, then both
+ * checks pooled until Renee's next payday. Simple equations first; the bill lists open on request.
  */
 export function PaycheckPlan({ month }: { month: string }) {
   const plan = useLoad(() => api.get<PaycheckView>(`/api/paychecks?month=${month}`), [month]);
@@ -27,63 +66,69 @@ export function PaycheckPlan({ month }: { month: string }) {
   const p = plan.data;
   if (plan.error) return <div className="notice warn">{plan.error}</div>;
   if (!p) return <div className="muted">Lining up paychecks…</div>;
-  const now = currentPeriod(p, today);
+  const now = currentHalf(p, today);
 
   return (
     <div className="stack">
       <div className="notice good">
-        <span>Each check pays for everything due after it, up to and including the next payday. A bill due on a payday is paid by the check before, since money can leave before a deposit lands. Tithe and savings moves come out of that day's check. Money a check leaves over carries forward to the next one (counted from the start of last month, as if it went to plan).</span>
+        <span>The month runs in two halves. <b>Step 1:</b> the first check of each half pays everything up to and including the next payday. <b>Step 2:</b> whatever's left of it, plus the second check, pays everything until the next half starts. A bill due on a payday is paid by the money you already have. Tithe and savings moves come out of the check that lands that day.</span>
       </div>
 
-      <div className="pay-grid">
-        {p.periods.map((x) => {
-          const pct = x.amount ? Math.min(100, (x.outflow / x.amount) * 100) : 0;
-          const live = now?.id === x.id;
-          const past = x.to < today;
-          return (
-            <section key={x.id} className={'card pay-card' + (live ? ' live' : '') + (past ? ' past' : '')} aria-label={`${x.person}'s ${fmt(x.payDate)} check`}>
-              <header className="pay-head">
-                <div>
-                  <div className="pay-who">{x.person}'s check · {fmt(x.payDate, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
-                  <div className="small muted">Covers {fmt(x.from)} – {fmt(x.to)}{live ? ' · living on this one now' : ''}</div>
-                </div>
-                <div className="pay-amt">{usd(x.amount)}</div>
-              </header>
-              <div className="pay-bar" role="img" aria-label={`${usd(x.outflow)} of ${usd(x.amount)} planned`}>
-                <span style={{ width: `${pct}%` }} className={x.surplus < 0 ? 'over' : undefined} />
+      {p.halves.map((h) => {
+        const a = h.first, b = h.second;
+        const live = now?.half.id === h.id;
+        const s1ok = h.step1.leaves >= 0;
+        const s1covered = !s1ok && h.step1.leaves + h.carryIn >= 0;
+        return (
+          <section key={h.id} className={'card half-card' + (live ? ' live' : '') + (h.to < today ? ' past' : '')} aria-label={`${fmt(h.first.payDate)} to ${fmt(h.to)}`}>
+            <header className="half-head">
+              <div>
+                <h2>{fmt(a.payDate)} – {fmt(h.to)}{live && <span className="pending-badge cash-badge" style={{ marginLeft: 8 }}>you are here</span>}</h2>
+                <div className="small muted">{a.person} {usd(a.amount)} on {wk(a.payDate)}{b ? ` + ${b.person} ${usd(b.amount)} on ${wk(b.payDate)}` : ''} = {usd(h.income)}</div>
               </div>
-              <div className="pay-sum small">
-                <span>{usd(x.outflow)} planned</span>
-                {x.surplus >= 0
-                  ? <span className="good">Leaves {usd(x.surplus)}{x.carryIn > 0 && <span className="muted"> (+{usd(x.carryIn)} carried in)</span>}</span>
-                  : x.short === 0
-                    ? <span className="warn-text">{usd(-x.surplus)} more than this check · covered by {usd(x.carryIn)} carried from earlier checks</span>
-                    : <span className="warn-text"><b>Short {usd(x.short)}</b>{x.carryIn ? ` even with ${usd(x.carryIn)} carried in` : ''}</span>}
+              <div className={'half-end ' + (h.end >= 0 ? 'good' : 'bad')}>
+                <span className="small">{h.end >= 0 ? `Left on ${fmt(h.to)}` : `Short by ${fmt(h.to)}`}</span>
+                <b>{usd(Math.abs(h.end))}</b>
               </div>
-              <ul className="pay-items">
-                {x.items.map((i, k) => (
-                  <li key={k} className={i.date < today && i.kind !== 'cash' && i.kind !== 'card' ? 'done' : undefined}>
-                    <span className="muted">{i.kind === 'cash' || i.kind === 'card' ? '' : fmt(i.date)}</span>
-                    <span>{i.name}{i.variable && i.kind === 'bill' && <span className="muted small"> · varies</span>}
-                      {i.kind === 'save' && <span className="pending-badge cash-badge">saving</span>}</span>
-                    <span className="num">{usd(i.amount)}</span>
-                  </li>
-                ))}
-              </ul>
-              {x.short > 0 && (
-                <div className="notice warn small">
-                  Move a bill after {fmt(x.to)}, or set aside {usd(x.short)} from an earlier check, so this one doesn't come up short.
+            </header>
+
+            <div className="half-steps">
+              <div className={'step' + (live && now?.step === 1 ? ' here' : '')}>
+                <div className="step-title"><span className="step-n">1</span>{a.person}'s check until {b ? `${b.person} is paid` : 'the next payday'} <span className="muted small">({fmt(h.step1.from)} – {fmt(h.step1.to)})</span></div>
+                <Line label={`${a.person}'s check`} value={usd(a.amount)} />
+                <Line label="Bills, tithe & cash until then" value={`−${usd(h.step1.outflow)}`} kind="minus" />
+                <Line label={b ? 'Left for step 2' : 'Left over'} value={signed(h.step1.leaves)} kind={s1ok ? 'good' : 'bad'} />
+                {!s1ok && (
+                  <div className={'notice small ' + (s1covered ? 'good' : 'warn')}>
+                    {a.person}'s check alone is {usd(-h.step1.leaves)} short before {b?.person ?? 'the next check'} is paid.
+                    {s1covered ? ` The ${usd(h.carryIn)} carried over from the last half covers it.` : ' Move a bill past ' + fmt(h.step1.to) + ' or set money aside from the last half.'}
+                  </div>
+                )}
+                <Items items={h.step1.items} today={today} />
+              </div>
+
+              {b && h.step2 && (
+                <div className={'step' + (live && now?.step === 2 ? ' here' : '')}>
+                  <div className="step-title"><span className="step-n">2</span>Both checks together until {a.person} is paid again <span className="muted small">({fmt(h.step2.from)} – {fmt(h.step2.to)})</span></div>
+                  <Line label={`Left from ${a.person}'s check`} value={signed(h.step1.leaves)} />
+                  <Line label={`+ ${b.person}'s check`} value={usd(b.amount)} />
+                  {h.carryIn > 0 && <Line label="+ Left over from the last half" value={usd(h.carryIn)} />}
+                  <Line label="= To work with" value={usd(h.step2.pool)} kind="total" />
+                  <Line label="Bills, tithe & cash until then" value={`−${usd(h.step2.outflow)}`} kind="minus" />
+                  <Line label={`Left on ${fmt(h.to)}`} value={signed(h.step2.leaves)} kind={h.step2.leaves >= 0 ? 'good' : 'bad'} />
+                  {h.step2.leaves < 0 && <div className="notice warn small">Together the checks come up {usd(-h.step2.leaves)} short before {fmt(h.to)}. Move a bill into the next half, trim cash, or carry more over from the last half.</div>}
+                  <Items items={h.step2.items} today={today} />
                 </div>
               )}
-            </section>
-          );
-        })}
-      </div>
+            </div>
+          </section>
+        );
+      })}
 
       {p.unscheduled.length > 0 && (
         <div className="card">
           <h2 style={{ marginBottom: 4 }}>Not tied to a check yet
-            <Tip label="About unscheduled items" text="Monthly money with no date: savings moves and extra debt payments. Choose which check pays for each and it comes out of that check every month (it also shows on the calendar)." />
+            <Tip label="About unscheduled items" text="Monthly money with no date: savings moves and extra debt payments. Choose which check pays for each and it comes out of that check every month (it also shows on the calendar). Until then the plan counts it as left over." />
           </h2>
           {p.unscheduled.map((u) => (
             <div key={u.categoryId} className="list-row">

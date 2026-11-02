@@ -3,28 +3,34 @@ import type { Db } from './db';
 import { categoryRows, overridesFor, schedulesFor } from './services';
 
 /**
- * The Paycheck Plan: money planned by paycheck instead of by month. Each check covers everything due after it,
- * up to and including the next payday (a bill due on a payday is paid by the earlier check, since money can
- * leave before the deposit lands). Money marked as paid on payday (tithe, savings moves) comes out of that day's check.
- * Cash envelopes and estimated card spending are spread over the days each check covers.
+ * The Paycheck Plan, in halves of the month. Paydays pair up in order of day of the month (Renee's 10th with
+ * Jason's 15th, Renee's 25th with Jason's 30th). Each half has two steps:
+ *   1. the first check alone pays everything until the second payday (inclusive: a bill due on a payday is paid
+ *      by the earlier money, since it can leave before the deposit lands);
+ *   2. what's left of it, pooled with the second check, pays everything until the next half begins (inclusive).
+ * Money marked as paid on payday (tithe, savings moves) comes out of that day's check. Cash envelopes and estimated
+ * card spending are spread over the days covered. What a half leaves over carries into the next.
  */
 
 export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: ISODate; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean }
-export interface Period {
+export interface Check { person: string; payDate: ISODate; amount: number }
+export interface Step { from: ISODate; to: ISODate; items: PlanItem[]; outflow: number }
+export interface Half {
   id: string;
-  person: string;
-  payDate: ISODate;
-  amount: number;
-  /** First and last day this check covers. */
   from: ISODate;
   to: ISODate;
-  items: PlanItem[];
-  outflow: number;
-  /** This check minus what it covers. */
-  surplus: number;
-  /** Surplus carried in from earlier checks in the view (never below zero). */
+  first: Check;
+  second: Check | null;
+  /** Step 1: first check alone, until the second payday. */
+  step1: Step & { leaves: number };
+  /** Step 2: what's left plus the second check, until the next half. */
+  step2: (Step & { pool: number; leaves: number }) | null;
+  /** Leftover carried in from the half before (never below zero). */
   carryIn: number;
-  short: number;
+  income: number;
+  outflow: number;
+  /** Money left when the next half starts (can be negative). */
+  end: number;
 }
 
 const ym = (d: string) => d.slice(0, 7) as YearMonth;
@@ -65,48 +71,64 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth) {
     });
   }
 
-  const periods: Period[] = [];
-  for (let i = 0; i < pays.length - 1; i++) {
-    const p = pays[i]!;
-    // Two people paid the same day share one window; each gets its own card.
-    const next = pays.slice(i + 1).find((x) => x.date > p.date);
-    if (!next) break;
-    const from = addDays(p.date, 1);
-    const to = next.date;
-    // Checks whose window touches this month, plus last month's so money they leave over carries in.
-    const prev = addMonths(month, -1);
-    if (to < `${prev}-01` || from > `${month}-${String(daysInMonth(month)).padStart(2, '0')}`) continue;
-    const sameDay = pays.filter((x) => x.date === p.date);
-    const share = 1 / sameDay.length;
+  // Which paydays start a half: pair the paydays by day of the month, first with second, third with fourth.
+  const rawDays = [...new Set(pays.map((e) => Number(e.originalDate.slice(8, 10))))].sort((a, b) => a - b);
+  const starts = new Set(rawDays.filter((_, i) => i % 2 === 0));
+  const isStart = (e: ScheduledEvent) => starts.has(Number(e.originalDate.slice(8, 10)));
+  const person = (e: ScheduledEvent) => e.name.replace(/^Payday — /, '');
+  const check = (e: ScheduledEvent): Check => ({ person: person(e), payDate: e.date, amount: e.amount });
+
+  /** Everything paid in (after, through], plus payday money on `payday` (it comes out of that day's check). */
+  const collect = async (after: ISODate, through: ISODate, payday: ISODate): Promise<Step> => {
     const items: PlanItem[] = [];
     for (const e of out) {
       const s = schedules.find((x) => x.id === e.scheduleId);
-      const giving = !!s?.onPayday;
-      // Payday money comes out of the check landing that day; any other bill on a payday belongs to the earlier check.
-      const inWindow = giving ? e.date >= p.date && e.date < to : e.date >= from && e.date <= to;
-      if (!inWindow) continue;
-      if (giving && e.date === p.date && sameDay.length > 1 && sameDay.indexOf(p) > 0) continue;
-      items.push({ scheduleId: e.scheduleId, categoryId: s?.categoryId ?? null, name: e.name, date: e.date, amount: Math.round((await amountOf(e)) * (giving ? 1 : share)), kind: e.kind === 'save' ? 'save' : 'bill', variable: e.variable });
+      const onPayday = !!s?.onPayday;
+      // Payday money due on the step's last day belongs to the check arriving that day (the next step).
+      const inside = onPayday ? e.date >= payday && (e.date < through || (e.date === through && through === payday)) : e.date > after && e.date <= through;
+      if (!inside) continue;
+      items.push({ scheduleId: e.scheduleId, categoryId: s?.categoryId ?? null, name: e.name, date: e.date, amount: Math.round(await amountOf(e)), kind: e.kind === 'save' ? 'save' : 'bill', variable: e.variable });
     }
-    // Spread cash and card spending across the days covered.
+    const from = addDays(after, 1);
     let cash = 0, card = 0;
-    for (let d = from; d <= to; d = addDays(d, 1)) { const r = perDay.get(ym(d)); if (r) { cash += r.cash; card += r.card; } }
-    if (cash > 0) items.push({ scheduleId: 'cash', categoryId: null, name: 'Cash for envelopes', date: from, amount: Math.round((cash * share) / 100) * 100, kind: 'cash', variable: false });
-    if (card > 0) items.push({ scheduleId: 'card', categoryId: null, name: 'Everyday card spending (estimate)', date: from, amount: Math.round(card * share), kind: 'card', variable: true });
+    for (let d = from; d <= through; d = addDays(d, 1)) { const r = perDay.get(ym(d)); if (r) { cash += r.cash; card += r.card; } }
+    if (cash > 0) items.push({ scheduleId: 'cash', categoryId: null, name: 'Cash for envelopes', date: from, amount: Math.round(cash / 100) * 100, kind: 'cash', variable: false });
+    if (card > 0) items.push({ scheduleId: 'card', categoryId: null, name: 'Everyday card spending (estimate)', date: from, amount: Math.round(card), kind: 'card', variable: true });
     items.sort((a, b) => a.date.localeCompare(b.date) || b.amount - a.amount);
-    const outflow = items.reduce((s, x) => s + x.amount, 0);
-    const person = p.name.replace(/^Payday — /, '');
-    periods.push({ id: `${p.scheduleId}|${p.date}`, person, payDate: p.date, amount: p.amount, from, to, items, outflow, surplus: p.amount - outflow, carryIn: 0, short: 0 });
+    return { from, to: through, items, outflow: items.reduce((t, x) => t + x.amount, 0) };
+  };
+
+  const halves: Half[] = [];
+  const startEvents = pays.filter(isStart);
+  for (let i = 0; i < startEvents.length - 1; i++) {
+    const a = startEvents[i]!;
+    const next = startEvents[i + 1]!;
+    // Halves touching this month, plus last month's so their leftovers carry in.
+    if (next.date < `${addMonths(month, -1)}-01` || a.date > `${month}-${String(daysInMonth(month)).padStart(2, '0')}`) continue;
+    const b = pays.find((p) => p.date > a.date && p.date < next.date && !isStart(p)) ?? null;
+    const s1 = await collect(a.date, b ? b.date : next.date, a.date);
+    const step1 = { ...s1, leaves: a.amount - s1.outflow };
+    let step2: Half['step2'] = null;
+    if (b) {
+      const s2 = await collect(b.date, next.date, b.date);
+      step2 = { ...s2, pool: 0, leaves: 0 };
+    }
+    halves.push({ id: `${a.scheduleId}|${a.date}`, from: addDays(a.date, 1), to: next.date, first: check(a), second: b ? check(b) : null, step1, step2,
+      carryIn: 0, income: a.amount + (b?.amount ?? 0), outflow: step1.outflow + (step2?.outflow ?? 0), end: 0 });
   }
-  periods.sort((a, b) => a.payDate.localeCompare(b.payDate) || a.person.localeCompare(b.person));
-  // Run the carry-over from the start of last month (as if last month went to plan), then show this month's checks.
+  halves.sort((x, y) => x.first.payDate.localeCompare(y.first.payDate));
+  // Carry leftovers forward from the start of last month (as if it went to plan), then show this month's halves.
   let carry = 0;
-  for (const p of periods) {
-    p.carryIn = carry;
-    p.short = Math.max(0, -(p.surplus + carry));
-    carry = Math.max(0, carry + p.surplus);
+  for (const h of halves) {
+    h.carryIn = carry;
+    if (h.step2) {
+      h.step2.pool = h.step1.leaves + h.carryIn + h.second!.amount;
+      h.step2.leaves = h.step2.pool - h.step2.outflow;
+      h.end = h.step2.leaves;
+    } else h.end = h.step1.leaves + h.carryIn;
+    carry = Math.max(0, h.end);
   }
-  const shown = periods.filter((p) => p.to >= `${month}-01`);
+  const shown = halves.filter((h) => h.to >= `${month}-01`);
 
   // Monthly items with no date yet (savings moves, extra debt payments): they need a check to come from.
   const rows = await rowsFor(month);
@@ -116,12 +138,17 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth) {
     .filter((r) => !parents.has(r.id) && !r.cash && r.planned > 0 && !scheduled.has(r.id) && r.kind !== 'everyday' && r.kind !== 'misc')
     .map((r) => ({ categoryId: r.id, name: r.name, amount: r.planned, kind: r.kind }));
 
-  return { month, periods: shown, unscheduled };
+  return { month, halves: shown, unscheduled };
 }
 
-/** Which check is paying (or will pay) each category's bill this month: categoryId → "Jason · Oct 30". */
+const short = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+/** Which money pays each category's bill this month: "Renee's Nov 10 check" or "Renee's and Jason's pooled checks (Nov 10 + 13)". */
 export function payerByCategory(plan: Awaited<ReturnType<typeof paycheckPlan>>) {
   const out: Record<string, string> = {};
-  for (const p of plan.periods) for (const i of p.items) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${p.person}'s ${new Date(p.payDate + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })} check`;
+  for (const h of plan.halves) {
+    for (const i of h.step1.items) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${h.first.person}'s ${short(h.first.payDate)} check`;
+    for (const i of h.step2?.items ?? []) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${h.first.person}'s and ${h.second!.person}'s pooled checks (${short(h.first.payDate)} + ${short(h.second!.payDate).replace(/^\w+ /, '')})`;
+  }
   return out;
 }

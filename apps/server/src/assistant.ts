@@ -17,7 +17,7 @@ export const TOOLS = [
   { name: 'get_budget', description: "The month's budget: every category with planned, spent and remaining, whether it's paid with cash envelopes, and whether a fluctuating bill is paid. Totals and take-home pay too.", input_schema: { type: 'object', properties: { month: MONTH }, required: ['month'] } },
   { name: 'get_transactions', description: 'Transactions counted in a month (bank and hand-entered), newest first. Optional filters: a category name (matches parents too) or a payee search.', input_schema: { type: 'object', properties: { month: MONTH, category: { type: 'string' }, search: { type: 'string' }, limit: { type: 'integer' } }, required: ['month'] } },
   { name: 'spending_by', description: 'Spending totals over a range of months, grouped by category or by payee. Good for trends and "where does our money go".', input_schema: { type: 'object', properties: { from: MONTH, to: MONTH, group: { type: 'string', enum: ['category', 'payee'] }, category: { type: 'string' } }, required: ['from', 'to', 'group'] } },
-  { name: 'get_paycheck_plan', description: "Which paycheck pays for what in a month: each check's amount, the days it covers, its bills, cash share, leftover, carry-over and any shortfall. Bills due on a payday are paid by the earlier check.", input_schema: { type: 'object', properties: { month: MONTH }, required: ['month'] } },
+  { name: 'get_paycheck_plan', description: "How the month's paychecks cover bills, in two halves: Renee's check alone until Jason's payday, then both checks pooled until Renee's next payday. Amounts, items, what's left at each step, carry-over and shortfalls.", input_schema: { type: 'object', properties: { month: MONTH }, required: ['month'] } },
   { name: 'get_forecast', description: 'Projected checking balance for the next 45 days from the latest Kemba balance, with the lowest point and any day it dips below the cushion.', input_schema: { type: 'object', properties: {} } },
   { name: 'get_bills', description: 'All scheduled bills, paydays and savings moves: due day(s), amount, whether the amount varies, months (for yearly bills) and how the date is known.', input_schema: { type: 'object', properties: {} } },
   { name: 'get_cash', description: "Cash envelopes for a month (planned vs filled, still to pull) and the Leftovers fund with Hearth's recommendation.", input_schema: { type: 'object', properties: { month: MONTH }, required: ['month'] } },
@@ -72,10 +72,16 @@ export async function runTool(db: Db, hid: string, name: string, input: Record<s
     }
     case 'get_paycheck_plan': {
       const p = await paycheckPlan(db, hid, month);
+      const items = (xs: { kind: string; date: string; name: string; amount: number; variable: boolean }[]) =>
+        xs.map((i) => ({ date: i.kind === 'cash' || i.kind === 'card' ? undefined : i.date, name: i.name, amount: d(i.amount), ...(i.variable ? { varies: true } : {}) }));
       return {
-        month, rule: 'A check covers everything due after it through the next payday; bills due on a payday go on the earlier check; tithe and savings moves come out of that day\'s check.',
-        checks: p.periods.map((x) => ({ person: x.person, pay_date: x.payDate, amount: d(x.amount), covers: `${x.from} to ${x.to}`, planned_out: d(x.outflow), leaves: d(x.surplus), carried_in: d(x.carryIn), short: d(x.short),
-          items: x.items.map((i) => ({ date: i.kind === 'cash' || i.kind === 'card' ? undefined : i.date, name: i.name, amount: d(i.amount), ...(i.variable ? { varies: true } : {}) })) })),
+        month,
+        rule: 'The month runs in two halves. Step 1: the first check of a half (Renee on the 10th or 25th) alone pays everything until the second payday (Jason on the 15th or 30th), inclusive. Step 2: what is left of it plus the second check (and anything carried from the last half) pays everything until the next half starts, inclusive. Tithe and savings moves come out of the check landing that day.',
+        halves: p.halves.map((h) => ({
+          covers: `${h.from} to ${h.to}`, carried_in: d(h.carryIn), left_at_end: d(h.end),
+          step1: { check: `${h.first.person} ${h.first.payDate}`, amount: d(h.first.amount), until: h.step1.to, planned_out: d(h.step1.outflow), leaves: d(h.step1.leaves), items: items(h.step1.items) },
+          step2: h.step2 && { adds_check: `${h.second!.person} ${h.second!.payDate}`, pool: d(h.step2.pool), until: h.step2.to, planned_out: d(h.step2.outflow), leaves: d(h.step2.leaves), items: items(h.step2.items) },
+        })),
         not_tied_to_a_check: p.unscheduled.map((u) => ({ name: u.name, amount: d(u.amount) })),
       };
     }

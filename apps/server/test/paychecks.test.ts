@@ -8,12 +8,13 @@ let db: Db;
 let app: FastifyInstance;
 let cookie = '';
 type Item = { name: string; date: string; amount: number; kind: string; categoryId: string | null };
-type Period = { person: string; payDate: string; amount: number; from: string; to: string; items: Item[]; outflow: number; surplus: number; carryIn: number; short: number };
+type Step = { from: string; to: string; items: Item[]; outflow: number; leaves: number; pool?: number };
+type Half = { from: string; to: string; first: { person: string; payDate: string; amount: number }; second: { person: string; payDate: string; amount: number } | null; step1: Step; step2: Step | null; carryIn: number; end: number };
 const api = async (method: string, url: string, payload?: unknown) => {
   const res = await app.inject({ method: method as 'GET', url, payload: payload as object, headers: { cookie } });
   return { status: res.statusCode, body: res.json() };
 };
-const plan = async (m = '2026-11') => (await api('GET', `/api/paychecks?month=${m}`)).body as { periods: Period[]; unscheduled: { categoryId: string; name: string }[]; payers: Record<string, string> };
+const plan = async (m = '2026-11') => (await api('GET', `/api/paychecks?month=${m}`)).body as { halves: Half[]; unscheduled: { categoryId: string; name: string }[]; payers: Record<string, string> };
 
 beforeAll(async () => {
   db = await openDb({ memory: true });
@@ -25,36 +26,40 @@ beforeAll(async () => {
 });
 afterAll(async () => { await app.close(); await db.close(); });
 
-describe('paycheck plan', () => {
-  it("shows November's checks, starting with Oct 30, which carries rent and everything to Nov 10", async () => {
+describe('paycheck plan in halves', () => {
+  it('pairs Renee\'s check with Jason\'s: 10th + 15th until the 25th, 25th + 30th until the 10th', async () => {
     const p = await plan();
-    // Nov 15 is a Sunday, so Jason is paid Friday the 13th.
-    expect(p.periods.map((x) => [x.person, x.payDate])).toEqual([['Jason', '2026-10-30'], ['Renee', '2026-11-10'], ['Jason', '2026-11-13'], ['Renee', '2026-11-25']]);
-    const oct30 = p.periods[0]!;
-    expect([oct30.from, oct30.to]).toEqual(['2026-10-31', '2026-11-10']);
-    expect(oct30.items.find((i) => i.name === 'Rent')).toMatchObject({ date: '2026-11-01', amount: 169000 });
+    // Oct 25 and Nov 15 fall on Sundays, so those checks come the Friday before.
+    expect(p.halves.map((h) => [h.first.person, h.first.payDate, h.second?.person, h.second?.payDate, h.to])).toEqual([
+      ['Renee', '2026-10-23', 'Jason', '2026-10-30', '2026-11-10'],
+      ['Renee', '2026-11-10', 'Jason', '2026-11-13', '2026-11-25'],
+      ['Renee', '2026-11-25', 'Jason', '2026-11-30', '2026-12-10'],
+    ]);
+    const late = p.halves[0]!;
+    expect([late.step1.to, late.step2!.from]).toEqual(['2026-10-30', '2026-10-31']);
+    expect(late.step2!.items.find((i) => i.name === 'Rent')).toMatchObject({ date: '2026-11-01', amount: 169000 });
   });
 
-  it('puts a bill due on payday on the earlier check, but the tithe on that day\'s check', async () => {
-    await db.query("UPDATE schedules SET days = '{10}', date_source = 'manual' WHERE name = 'Spectrum Mobile'");
-    const p = await plan();
-    const [oct30, nov10] = p.periods;
-    expect(oct30!.items.some((i) => i.name === 'Spectrum Mobile' && i.date === '2026-11-10')).toBe(true);
-    expect(nov10!.items.some((i) => i.name === 'Spectrum Mobile')).toBe(false);
-    expect(oct30!.items.filter((i) => i.name.includes('tithe')).map((i) => i.date)).toEqual(['2026-10-30']);
-    expect(nov10!.items.filter((i) => i.name.includes('tithe')).map((i) => i.date)).toEqual(['2026-11-10']);
+  it("Renee's check alone pays through Jason's payday; tithe comes out of the check landing that day", async () => {
+    await db.query("UPDATE schedules SET days = '{13}', date_source = 'manual' WHERE name = 'Spectrum Mobile'");
+    const h = (await plan()).halves[1]!;
+    expect(h.step1.items.some((i) => i.name === 'Spectrum Mobile' && i.date === '2026-11-13')).toBe(true);
+    expect(h.step1.items.filter((i) => i.name.includes('tithe')).map((i) => i.date)).toEqual(['2026-11-10']);
+    expect(h.step2!.items.filter((i) => i.name.includes('tithe')).map((i) => i.date)).toEqual(['2026-11-13']);
+    // The next half's tithe (Nov 25) isn't in this one.
+    expect([...h.step1.items, ...h.step2!.items].some((i) => i.date === '2026-11-25' && i.name.includes('tithe'))).toBe(false);
   });
 
-  it('spreads cash envelopes over the days each check covers, and carries surplus forward', async () => {
+  it('pools what is left of the first check with the second, and carries leftovers forward', async () => {
     await db.query("UPDATE categories SET cash = TRUE WHERE name IN ('Groceries', 'Fuel')");
     const p = await plan();
-    const cash = p.periods.map((x) => x.items.find((i) => i.kind === 'cash')?.amount ?? 0);
-    expect(cash.every((c) => c > 0)).toBe(true);
-    for (let i = 1; i < p.periods.length; i++) {
-      const prev = p.periods[i - 1]!;
-      expect(p.periods[i]!.carryIn).toBe(Math.max(0, prev.carryIn + prev.surplus));
+    for (const h of p.halves) {
+      expect(h.step1.leaves).toBe(h.first.amount - h.step1.outflow);
+      expect(h.step2!.pool).toBe(h.step1.leaves + h.carryIn + h.second!.amount);
+      expect(h.end).toBe(h.step2!.pool! - h.step2!.outflow);
+      expect(h.step1.items.some((i) => i.kind === 'cash') && h.step2!.items.some((i) => i.kind === 'cash')).toBe(true);
     }
-    for (const x of p.periods) expect(x.short).toBe(Math.max(0, -(x.surplus + x.carryIn)));
+    for (let i = 1; i < p.halves.length; i++) expect(p.halves[i]!.carryIn).toBe(Math.max(0, p.halves[i - 1]!.end));
   });
 
   it('lists monthly items without a date, and pays one from a chosen check', async () => {
@@ -64,8 +69,8 @@ describe('paycheck plan', () => {
     await api('POST', '/api/paychecks/assign', { categoryId: ef.categoryId, payDay: 15 });
     const after = await plan();
     expect(after.unscheduled.some((u) => u.name === 'Emergency fund')).toBe(false);
-    const nov13 = after.periods.find((x) => x.payDate === '2026-11-13')!;
-    expect(nov13.items.find((i) => i.name === 'Emergency fund')).toMatchObject({ date: '2026-11-13', amount: 50000, kind: 'save' });
-    expect(after.payers[ef.categoryId]).toBe("Jason's Nov 13 check");
+    const h = after.halves[1]!;
+    expect(h.step2!.items.find((i) => i.name === 'Emergency fund')).toMatchObject({ date: '2026-11-13', amount: 50000, kind: 'save' });
+    expect(after.payers[ef.categoryId]).toBe("Renee's and Jason's pooled checks (Nov 10 + 13)");
   });
 });

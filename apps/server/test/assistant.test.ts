@@ -18,8 +18,8 @@ const fakeClaude = (async (_url: string, init: RequestInit) => {
   const last = body.messages[body.messages.length - 1];
   if (Array.isArray(last.content) && last.content[0]?.type === 'tool_result') {
     const plan = JSON.parse(last.content[0].content);
-    const oct30 = plan.checks[0];
-    return new Response(JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: `${oct30.person}'s ${oct30.pay_date} check covers ${oct30.covers}.` }] }));
+    const h = plan.halves[0];
+    return new Response(JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: `${h.step2.adds_check} joins ${h.step1.check}; together they cover to ${h.step2.until}.` }] }));
   }
   return new Response(JSON.stringify({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'get_paycheck_plan', input: { month: '2026-11' } }] }));
 }) as unknown as typeof fetch;
@@ -53,7 +53,7 @@ describe('asking', () => {
   it('answers using a tool, and keeps the conversation', async () => {
     const r = await app.inject({ method: 'POST', url: '/api/assistant/ask', payload: { message: 'Which check pays November rent?' }, headers: { cookie } });
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toMatchObject({ answer: "Jason's 2026-10-30 check covers 2026-10-31 to 2026-11-10.", tools: ['get_paycheck_plan'] });
+    expect(r.json()).toMatchObject({ answer: 'Jason 2026-10-30 joins Renee 2026-10-23; together they cover to 2026-11-10.', tools: ['get_paycheck_plan'] });
     expect(sent[0]!.system).toContain('Jason');
     const conv = (await app.inject({ method: 'GET', url: `/api/assistant/${r.json().conversationId}`, headers: { cookie } })).json();
     expect(conv.messages.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant']);

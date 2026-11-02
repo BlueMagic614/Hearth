@@ -377,3 +377,23 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .budget-chart { display: grid; gap: 10px; }
 .stat-toggle { cursor: pointer; text-align: left; font: inherit; color: inherit; }
 .stat-toggle[aria-expanded='true'] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+
+/* Paycheck plan in halves */
+.half-card { display: grid; gap: 14px; }
+.half-card.live { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.half-card.past { opacity: .7; }
+.half-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.half-end { display: grid; text-align: right; }
+.half-end b { font-size: 22px; font-weight: 600; }
+.half-end.good b { color: var(--accent-ink); } .half-end.bad b { color: var(--warn-ink); }
+.half-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .half-steps { grid-template-columns: 1fr; } }
+.step { display: grid; gap: 4px; align-content: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.step.here { border-color: var(--accent); }
+.step-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.step-n { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--ink); color: var(--bg); font-size: 11px; }
+.eq-line { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; padding: 2px 0; }
+.eq-line .num { font-variant-numeric: tabular-nums; font-weight: 500; }
+.eq-line.minus { color: var(--ink-2); }
+.eq-line.total, .eq-line.good, .eq-line.bad { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; font-weight: 600; }
+.eq-line.good .num { color: var(--accent-ink); } .eq-line.bad .num { color: var(--warn-ink); }
