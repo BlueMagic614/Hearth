@@ -272,7 +272,7 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
     if (b.date !== undefined) add('date', b.date);
     if (b.amount !== undefined) add('amount_cents', -b.amount);
     if (b.merchant !== undefined) add('merchant', b.merchant);
-    if (b.categoryId !== undefined) { add('category_id', b.categoryId); add('source', 'you'); }
+    if (b.categoryId !== undefined) { add('category_id', b.categoryId); add('source', 'you'); add('schedule_id', null); }
     if (b.note !== undefined) add('note', b.note);
     if (b.flow !== undefined) add('flow', b.flow);
     if (b.budgetMonth !== undefined) add('budget_month', b.budgetMonth);
@@ -297,6 +297,16 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       const others = await db.query<{ id: string }>(`SELECT id FROM transactions WHERE household_id = $1 AND category_id IS NULL AND flow = 'spend'
         AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $2`, [hid(req), key]);
       alsoSorted = await categorize(db, hid(req), others.map((o) => o.id));
+      // A correction also fixes this payee's other automatically sorted payments of about the same amount
+      // (within 15%), leaving anything a person chose alone.
+      const me = (await db.query<{ amount_cents: number }>('SELECT amount_cents FROM transactions WHERE id = $1', [id]))[0]!;
+      const fixed = await db.query<{ id: string }>(
+        `UPDATE transactions SET category_id = $1, schedule_id = NULL, source = 'rule', needs_review = FALSE, suggested_category_id = NULL
+         WHERE household_id = $2 AND id <> $3 AND category_id IS NOT NULL AND category_id <> $1 AND source IN ('rule', 'agent', 'bank', 'claude')
+           AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $4 AND abs(abs(amount_cents) - $5) <= $5 * 0.15 RETURNING id`,
+        [b.categoryId, hid(req), id, key, Math.abs(me.amount_cents)]);
+      if (fixed.length) { await linkBills(db, fixed.map((f) => f.id)); await assignBudgetMonths(db, hid(req)); }
+      alsoSorted += fixed.length;
     }
     return { ok: true, alsoSorted };
   });

@@ -74,3 +74,30 @@ describe('fluctuating bills', () => {
     expect(find(await budget('2026-10'), 'Rent')!.billPaid).toBe(false);
   });
 });
+
+describe('two bills from one payee', () => {
+  const cat = async (name: string) => (await db.query<{ id: string }>('SELECT id FROM categories WHERE name = $1', [name]))[0]!.id;
+  const catOf = async (id: string) => (await db.query<{ name: string }>('SELECT c.name FROM transactions t JOIN categories c ON c.id = t.category_id WHERE t.id = $1', [id]))[0]?.name;
+
+  it('tells Spectrum internet from Spectrum Mobile by amount, even after memory points one way', async () => {
+    const mobile = await bankTxn('Spectrum', -102.76, 'RENT_AND_UTILITIES_TELEPHONE', '2026-09-14');
+    const internet = await bankTxn('Spectrum', -170.44, 'RENT_AND_UTILITIES_TELEPHONE', '2026-09-05');
+    await api('POST', '/api/agent/run');
+    expect(await catOf(mobile)).toBe('Spectrum Mobile');
+    expect(await catOf(internet)).toBe('Spectrum Internet & TV');
+  });
+
+  it('fixing one misfiled payment fixes its auto-sorted look-alikes, not the other bill', async () => {
+    // Simulate the old behaviour: everything from Spectrum filed under Mobile.
+    const a = await bankTxn('Spectrum', -170.44, null, '2026-10-05');
+    const b = await bankTxn('Spectrum', -171.02, null, '2026-08-05');
+    const m = await bankTxn('Spectrum', -102.76, null, '2026-10-14');
+    await db.query("UPDATE transactions SET category_id = $1, source = 'rule' WHERE id = ANY($2)", [await cat('Spectrum Mobile'), [a, b, m]]);
+    const r = await api('PATCH', `/api/transactions/${a}`, { categoryId: await cat('Spectrum Internet & TV') });
+    expect(r.body.alsoSorted).toBeGreaterThanOrEqual(1);
+    expect(await catOf(b)).toBe('Spectrum Internet & TV');
+    expect(await catOf(m)).toBe('Spectrum Mobile');
+    const link = await db.query<{ name: string }>('SELECT s.name FROM transactions t JOIN schedules s ON s.id = t.schedule_id WHERE t.id = $1', [b]);
+    expect(link[0]?.name).toBe('Spectrum Internet & TV');
+  });
+});

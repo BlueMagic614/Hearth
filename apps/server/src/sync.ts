@@ -127,34 +127,44 @@ export async function categorize(db: Db, hid: string, ids: string[]): Promise<nu
     "SELECT id, merchant, amount_cents, to_char(date, 'YYYY-MM-DD') AS date FROM transactions WHERE id = ANY($1)", [ids]);
   const bills = await db.query<{ id: string; name: string; amount_cents: number; variable: boolean; category_id: string | null }>(
     'SELECT id, name, amount_cents, variable, category_id FROM schedules WHERE household_id = $1', [hid]);
+  const billCats = new Set(bills.map((b) => b.category_id).filter(Boolean));
+  const diff = (a: number, b: number) => Math.abs(Math.abs(a) - Math.abs(b));
   let n = 0;
   for (const t of txns) {
     const key = norm(t.merchant);
     if (!key) continue;
-    const prior = (await db.query<{ category_id: string; schedule_id: string | null }>(
-      `SELECT category_id, schedule_id FROM transactions WHERE household_id = $1 AND id <> $2 AND category_id IS NOT NULL AND source IN ('you','rule','manual')
-         AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $3 ORDER BY date DESC LIMIT 1`, [hid, t.id, key]))[0];
-    if (prior) {
-      // Same payee, same category, and the same bill link (so repeat payments teach the due date).
-      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule', needs_review = FALSE, suggested_category_id = NULL WHERE id = $3", [prior.category_id, prior.schedule_id, t.id]);
-      n++;
-      continue;
-    }
-    if (t.amount_cents >= 0) continue;
-    const bill = bills.find((b) => {
-      // Match on the brand word ("Columbia" in "Columbia Gas"), never generic words like "gas" that a gas station shares.
-      const brand = b.name.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-z0-9]+/).find((w) => w.length >= 3 && !GENERIC.has(w));
-      // Short names may be initials: "AEP" matches "American Electric Power".
+
+    // Bills this payment could be: brand in the payee name and an amount close to the bill. Closest amount wins,
+    // which tells apart two bills from one payee (Spectrum internet $171 vs Spectrum Mobile $103).
+    let bill: (typeof bills)[number] | undefined;
+    if (t.amount_cents < 0) {
       const initials = t.merchant.toLowerCase().split(/[^a-z]+/).filter(Boolean).map((w) => w[0]).join('');
-      const nameHit = !!brand && (key.includes(brand) || (brand.length <= 4 && initials.includes(brand)));
-      const tolerance = b.variable ? 0.6 : 0.25;
-      const amountHit = Math.abs(Math.abs(t.amount_cents) - Math.abs(b.amount_cents)) <= Math.abs(b.amount_cents) * tolerance;
-      return nameHit && amountHit;
-    });
-    if (bill?.category_id) {
-      await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule', needs_review = FALSE, suggested_category_id = NULL WHERE id = $3", [bill.category_id, bill.id, t.id]);
-      n++;
+      const fits = bills.filter((b) => {
+        // Match on the brand word ("Columbia" in "Columbia Gas"), never generic words like "gas" that a gas station shares.
+        // Short names may be initials: "AEP" matches "American Electric Power".
+        const brand = b.name.toLowerCase().replace(/\(.*?\)/g, '').split(/[^a-z0-9]+/).find((w) => w.length >= 3 && !GENERIC.has(w));
+        const nameHit = !!brand && (key.includes(brand) || (brand.length <= 4 && initials.includes(brand)));
+        return nameHit && diff(t.amount_cents, b.amount_cents) <= Math.abs(b.amount_cents) * (b.variable ? 0.6 : 0.25);
+      });
+      bill = fits.sort((a, b) => diff(t.amount_cents, a.amount_cents) - diff(t.amount_cents, b.amount_cents))[0];
     }
+
+    // What the household did with this payee before. If it went to more than one category, the past payment
+    // closest in amount decides.
+    const priors = await db.query<{ category_id: string; schedule_id: string | null; amount_cents: number }>(
+      `SELECT category_id, schedule_id, amount_cents FROM transactions WHERE household_id = $1 AND id <> $2 AND category_id IS NOT NULL AND source IN ('you','rule','manual')
+         AND regexp_replace(lower(merchant), '[^a-z]', '', 'g') = $3 ORDER BY (source = 'you') DESC, date DESC LIMIT 30`, [hid, t.id, key]);
+    const prior = new Set(priors.map((p) => p.category_id)).size > 1
+      ? [...priors].sort((a, b) => diff(t.amount_cents, a.amount_cents) - diff(t.amount_cents, b.amount_cents))[0]
+      : priors[0];
+
+    // A matching bill beats memory that points at a different bill (memory can't see amounts); memory wins otherwise.
+    const useBill = bill?.category_id && (!prior || prior.category_id === bill.category_id || billCats.has(prior.category_id));
+    const choice = useBill ? { category_id: bill!.category_id!, schedule_id: bill!.id } : prior;
+    if (!choice) continue;
+    await db.query("UPDATE transactions SET category_id = $1, schedule_id = $2, source = 'rule', needs_review = FALSE, suggested_category_id = NULL WHERE id = $3",
+      [choice.category_id, choice.schedule_id, t.id]);
+    n++;
   }
   return n;
 }

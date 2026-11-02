@@ -264,3 +264,4 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .picker-list li.special { color: var(--muted); }
 .picker-list li.special + li:not(.special) { border-top: 1px solid var(--line-2); margin-top: 3px; padding-top: 9px; }
 .picker-empty { color: var(--muted); cursor: default !important; }
+@media (max-width: 560px) { .bpanel-txn { flex-wrap: wrap; } .bpanel-txn .picker { order: 5; flex: 1 1 100% !important; width: auto !important; } }

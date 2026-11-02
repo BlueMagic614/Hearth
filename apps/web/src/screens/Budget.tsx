@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { parseCents, type CategoryNode } from '@hearth/core';
 import { api, type BudgetView, type Txn } from '../api';
 import { CategoryDonut } from '../components/CategoryDonut';
+import { CategoryPicker } from '../components/CategoryPicker';
+import { leafOptions } from './Transactions';
 import { SpendingSuggestions } from '../components/SpendingSuggestions';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
 
@@ -142,6 +144,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
     collect(x.children, prefix + x.name + ' › ');
   });
   collect(tops, '');
+  const options = leafOptions(tops);
   const day = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const monthName = (ym: string) => new Date(ym + '-15T12:00:00').toLocaleDateString('en-US', { month: 'long' });
   const shiftYM = (ym: string, n: number) => { const [y, m] = ym.split('-').map(Number) as [number, number]; const i = y * 12 + m - 1 + n; return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`; };
@@ -213,7 +216,12 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
                 <button className="btn sm ghost" style={{ height: 24, padding: '0 6px', color: 'var(--muted)' }} title="Choose which month this payment counts toward"
                   onClick={() => run(() => api.patch(`/api/transactions/${t.id}`, { budgetMonth: shiftTarget(t)!.ym }))}>Count in {shiftTarget(t)!.label}</button>
               )}
-              <span className={t.amount_cents > 0 ? 'good' : undefined} style={{ fontWeight: 500 }}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
+              <CategoryPicker compact style={{ width: 210, flex: '0 1 210px' }} label={`Move ${t.merchant} to another category`} value={t.category_id} options={options}
+                placeholder="Move to…" onChange={(v) => run(async () => {
+                  const r = await api.patch<{ alsoSorted?: number }>(`/api/transactions/${t.id}`, { categoryId: v, flow: 'spend' });
+                  setToast({ message: `Moved ${t.merchant} to ${options.find((o) => o.id === v)?.label.split(' › ').pop()}` + (r.alsoSorted ? `, plus ${r.alsoSorted} similar payment${r.alsoSorted === 1 ? '' : 's'}` : '') });
+                })} />
+              <span className={t.amount_cents > 0 ? 'good' : undefined} style={{ fontWeight: 500, width: 84, textAlign: 'right' }}>{t.amount_cents > 0 ? '+' : ''}{usd(Math.abs(t.amount_cents), true)}</span>
             </div>
           ))}
         </div>
