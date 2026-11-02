@@ -277,3 +277,11 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .about-line { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
 .misc-tags { display: grid; gap: 2px; max-width: 420px; }
 .misc-tag-row { display: flex; justify-content: space-between; padding: 5px 0; border-top: 1px solid var(--line-2); font-size: 13px; }
+
+/* Collapsible parents */
+.chev { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-left: -4px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--muted); cursor: pointer; flex: 0 0 auto; }
+.chev:hover { background: var(--line-2); color: var(--ink); }
+.chev svg { transition: transform .18s ease; }
+.chev.shut svg { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .chev svg { transition: none; } }

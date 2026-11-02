@@ -15,6 +15,15 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const txns = useLoad(() => api.get<Txn[]>(`/api/transactions?month=${month}`), [month]);
   const reload = () => { reloadBudget(); txns.reload(); };
   const [open, setOpen] = useState<string | null>(null);
+  // Collapsed parents are remembered in this browser (a per-person convenience; nothing breaks without it).
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('hearth.budget.collapsed') ?? '[]') as string[]); } catch { return new Set(); }
+  });
+  const saveCollapsed = (next: Set<string>) => {
+    setCollapsed(next);
+    try { localStorage.setItem('hearth.budget.collapsed', JSON.stringify([...next])); } catch { /* storage unavailable */ }
+  };
+  const toggleCollapse = (id: string) => { const n = new Set(collapsed); n.has(id) ? n.delete(id) : n.add(id); saveCollapsed(n); };
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -325,6 +334,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
         {editing && (isTop && n.children.length ? <span className="c-check" /> : check(n))}
         <div className="name" style={{ paddingLeft: isTop ? 0 : 14 + (depth - 1) * 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {isTop && n.children.length === 0 && <span className="chev" aria-hidden="true" style={{ cursor: 'default', background: 'none' }} />}
+            {n.children.length > 0 && (
+              <button type="button" className={'chev' + (collapsed.has(n.id) ? ' shut' : '')} aria-expanded={!collapsed.has(n.id)}
+                aria-label={`${collapsed.has(n.id) ? 'Expand' : 'Collapse'} ${n.name}`} title={collapsed.has(n.id) ? 'Show categories' : 'Hide categories'}
+                onClick={() => toggleCollapse(n.id)}>
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            )}
             {nameCell(n, isTop ? 15 : depth > 1 ? 13 : 14, isTop ? 600 : 400)}
             {n.children.length > 1 && <span className="small count" style={{ color: 'var(--faint)' }}>{n.children.length} {isTop ? 'categories' : 'subcategories'}</span>}
             {isTop && n.children.length > 1 && !editing && (
@@ -344,7 +361,7 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
       </div>
       {panel(n, isTop, isTop ? 0 : 14 + (depth - 1) * 24)}
       {confirmBox(n, isTop ? 34 : 54)}
-      {n.children.map((c) => renderNode(c, depth + 1, false))}
+      {!collapsed.has(n.id) && n.children.map((c) => renderNode(c, depth + 1, false))}
       {addForm(n.id, isTop ? 40 : 60)}
     </div>
   );
@@ -377,6 +394,15 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
             <Tip label="About parent categories" text="Parents hold categories, and any category can be split into subcategories. Totals roll up. Moving a category keeps all of its transactions." />
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
+            {(() => {
+              const parents: string[] = [];
+              const walk = (ns: CategoryNode[]) => ns.forEach((x) => { if (x.children.length) { parents.push(x.id); walk(x.children); } });
+              walk(tops);
+              const allShut = parents.length > 0 && parents.every((id) => collapsed.has(id));
+              return parents.length > 0 && (
+                <button className="btn ghost" onClick={() => saveCollapsed(allShut ? new Set() : new Set(parents))}>{allShut ? 'Expand all' : 'Collapse all'}</button>
+              );
+            })()}
             {editing && <button className="btn" onClick={() => run(async () => { const r = await api.post<{ id: string }>('/api/categories', { name: 'New category', parentId: null, month }); setRenaming({ id: r.id, value: 'New category' }); })}>+ New parent category</button>}
             <button className="btn primary" onClick={() => { commitRename(); setEditing(!editing); setSelected(new Set()); setAdding(null); setConfirming(null); }}>{editing ? 'Done' : 'Rearrange'}</button>
           </div>
