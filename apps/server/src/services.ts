@@ -86,8 +86,9 @@ export async function setPlanned(db: Db, categoryId: string, month: YearMonth, c
 }
 
 export async function schedulesFor(db: Db, hid: string): Promise<Schedule[]> {
-  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null; date_source: string; window_days: number; months: number[] | null; on_payday: boolean }>(
-    'SELECT * FROM schedules WHERE household_id = $1', [hid],
+  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null; date_source: string; window_days: number; months: number[] | null; on_payday: boolean; flexible: boolean }>(
+    // Bills of deleted (archived) categories are gone from every plan; they return if the category is restored.
+    'SELECT s.* FROM schedules s LEFT JOIN categories c ON c.id = s.category_id WHERE s.household_id = $1 AND (s.category_id IS NULL OR NOT c.archived)', [hid],
   );
   const pay = await db.query<{ id: string; person: string; amount_cents: number; cadence: string; days: number[]; weekend_rule: string; date_source: string; window_days: number }>('SELECT * FROM income_sources WHERE household_id = $1', [hid]);
   return [
@@ -97,7 +98,7 @@ export async function schedulesFor(db: Db, hid: string): Promise<Schedule[]> {
     })),
     ...bills.map((b): Schedule => ({
       id: b.id, name: b.name, kind: b.kind as Schedule['kind'], amount: b.amount_cents, cadence: b.cadence as Schedule['cadence'], days: b.days,
-      weekday: b.weekday ?? undefined, weekendRule: b.weekend_rule as Schedule['weekendRule'], variable: b.variable, categoryId: b.category_id, months: b.months, onPayday: b.on_payday,
+      weekday: b.weekday ?? undefined, weekendRule: b.weekend_rule as Schedule['weekendRule'], variable: b.variable, categoryId: b.category_id, months: b.months, onPayday: b.on_payday, flexible: b.flexible,
       dateSource: b.date_source as DateSource, windowDays: b.window_days,
     })),
   ];

@@ -1,6 +1,6 @@
 import { addDays, addMonths, daysInMonth, eventsForMonth, type ISODate, type Schedule, type ScheduledEvent, type YearMonth } from '@hearth/core';
 import type { Db } from './db';
-import { categoryRows, overridesFor, schedulesFor } from './services';
+import { categoryRows, getSetting, overridesFor, schedulesFor } from './services';
 import { householdToday } from './time';
 
 /**
@@ -13,7 +13,13 @@ import { householdToday } from './time';
  * card spending are spread over the days covered. What a half leaves over carries into the next.
  */
 
-export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: ISODate; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean }
+export interface PlanItem {
+  scheduleId: string; categoryId: string | null; name: string; date: ISODate; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean;
+  /** Placed by Hearth (flexible timing). */
+  suggested?: boolean;
+  /** Identifies a line in "Right now" so it can be marked as already paid or covered. */
+  key?: string;
+}
 export interface Check { person: string; payDate: ISODate; amount: number }
 export interface Step { from: ISODate; to: ISODate; items: PlanItem[]; outflow: number }
 export interface Half {
@@ -37,6 +43,8 @@ export interface Half {
    * end = balance − still due + checks still to come in this half.
    */
   actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null;
+  /** Lines of "Right now" marked as already paid or covered. */
+  coveredKeys?: string[];
 }
 
 const ym = (d: string) => d.slice(0, 7) as YearMonth;
@@ -50,7 +58,10 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
   const months = [addMonths(month, -1), month, addMonths(month, 1), addMonths(month, 2)];
   const events = months.flatMap((m) => eventsForMonth(schedules, m, overrides));
   const pays = events.filter((e) => e.kind === 'pay').sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
-  const out = events.filter((e) => e.kind !== 'pay');
+  const flexIds = new Set(schedules.filter((x) => x.flexible).map((x) => x.id));
+  // Flexible bills get a day from Hearth below, so they're left out of the fixed dates.
+  const out = events.filter((e) => e.kind !== 'pay' && !flexIds.has(e.scheduleId));
+  const flexEvents = events.filter((e) => flexIds.has(e.scheduleId));
 
   // A bill's budgeted amount usually knows better than its schedule (it's what was planned this month).
   const rowsBy = (opts.cache ?? new Map()) as Map<string, Awaited<ReturnType<typeof categoryRows>>>;
@@ -138,11 +149,14 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
     const paid = new Set((await db.query<{ schedule_id: string }>(
       "SELECT DISTINCT schedule_id FROM transactions WHERE household_id = $1 AND schedule_id IS NOT NULL AND date >= $2 AND date <= $3", [hid, live.first.payDate, today])).map((r) => r.schedule_id));
     const remaining: PlanItem[] = [];
-    // Cash already pulled this month doesn't need pulling again: what's still to withdraw caps the cash still due.
-    const filledBy = new Map((await db.query<{ month: string; s: unknown }>(
-      "SELECT month, SUM(amount_cents) AS s FROM cash_fills WHERE household_id = $1 AND kind = 'fill' GROUP BY month", [hid])).map((r) => [r.month, Number(r.s)]));
-    const cashLeftIn = new Map<string, number>();
-    for (const m of months) cashLeftIn.set(m, Math.max(0, Math.round((perDay.get(m)?.cash ?? 0) * daysInMonth(m)) - (filledBy.get(m) ?? 0)));
+    // Cash already pulled since this half began counts against its cash: only what's left to withdraw is still due.
+    const pulled = Number((await db.query<{ s: unknown }>(
+      "SELECT COALESCE(-SUM(amount_cents), 0) AS s FROM transactions WHERE household_id = $1 AND flow = 'cash' AND amount_cents < 0 AND date >= $2 AND date <= $3",
+      [hid, live.first.payDate, today]))[0]!.s);
+    const halfCash = [live.step1, ...(live.step2 ? [live.step2] : [])].flatMap((x) => x.items).filter((i) => i.kind === 'cash').reduce((t, i) => t + i.amount, 0);
+    let cashBudget = Math.max(0, halfCash - pulled);
+    const covered = new Set((await getSetting<Record<string, string[]>>(db, hid, 'paycheck_covered', {}))[live.id] ?? []);
+    live.coveredKeys = [...covered];
     for (const st of [live.step1, ...(live.step2 ? [live.step2] : [])]) {
       const days = Math.round((Date.parse(st.to) - Date.parse(st.from)) / 86400_000) + 1;
       const left = Math.max(0, Math.round((Date.parse(st.to) - Date.parse(today > st.from ? today : st.from)) / 86400_000) + 1);
@@ -150,13 +164,9 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
         if (i.kind === 'cash' || i.kind === 'card') {
           // Cash and card spending for the days still ahead (cash only as far as it hasn't been pulled yet).
           let part = Math.round((i.amount * Math.min(days, left)) / days / 100) * 100;
-          if (i.kind === 'cash') {
-            const m = ym(today > st.from ? today : st.from);
-            part = Math.min(part, cashLeftIn.get(m) ?? part);
-            cashLeftIn.set(m, (cashLeftIn.get(m) ?? 0) - part);
-          }
-          if (part > 0) remaining.push({ ...i, amount: part, name: i.kind === 'cash' ? `Cash still to pull, ${Math.min(days, left)} days` : `${i.name}, ${Math.min(days, left)} days` });
-        } else if (i.date >= today && !paid.has(i.scheduleId)) remaining.push(i);
+          if (i.kind === 'cash') { part = Math.min(part, cashBudget); cashBudget -= part; }
+          if (part > 0 && !covered.has(i.kind)) remaining.push({ ...i, key: i.kind, amount: part, name: i.kind === 'cash' ? `Cash still to pull, ${Math.min(days, left)} days` : `${i.name}, ${Math.min(days, left)} days` });
+        } else if (i.date >= today && !paid.has(i.scheduleId) && !covered.has(`${i.scheduleId}|${i.date}`)) remaining.push({ ...i, key: `${i.scheduleId}|${i.date}` });
       }
     }
     const balance = Number(acct!.balance);
@@ -166,6 +176,32 @@ export async function paycheckPlan(db: Db, hid: string, month: YearMonth, opts: 
       asOf: new Intl.DateTimeFormat('en-CA', { timeZone: process.env.HEARTH_TZ ?? 'America/New_York' }).format(new Date(acct!.updated as Date)),
       balance, stillDue, checksToCome, end: balance - stillDue + checksToCome, items: remaining.sort((a, b) => a.date.localeCompare(b.date)),
     };
+  }
+
+  // Flexible bills: each month, pay from the half with the most room (the real picture for the half we're in),
+  // on its later payday so bills come first. Skipped for a month it's already been paid.
+  for (const e of flexEvents) {
+    const m = ym(e.originalDate);
+    const already = (await db.query("SELECT 1 FROM transactions WHERE household_id = $1 AND schedule_id = $2 AND COALESCE(budget_month, to_char(date, 'YYYY-MM')) = $3 LIMIT 1", [hid, e.scheduleId, m])).length > 0;
+    if (already) continue;
+    const payday = (h: Half) => h.second?.payDate ?? h.first.payDate;
+    const options = halves.filter((h) => ym(payday(h)) === m && payday(h) >= today);
+    if (!options.length) continue;
+    const room = (h: Half) => (h.actual ? h.actual.end : h.income - h.outflow);
+    const best = options.reduce((a, b) => (room(b) > room(a) ? b : a));
+    const sched = schedules.find((x) => x.id === e.scheduleId);
+    const item: PlanItem = { scheduleId: e.scheduleId, categoryId: sched?.categoryId ?? null, name: e.name, date: payday(best), amount: Math.round(await amountOf(e)), kind: 'bill', variable: false, suggested: true };
+    const step = best.step2 ?? best.step1;
+    step.items.push(item);
+    step.items.sort((a, b) => a.date.localeCompare(b.date) || b.amount - a.amount);
+    step.outflow += item.amount;
+    best.outflow += item.amount;
+    if (step === best.step1) best.step1.leaves = best.first.amount - best.step1.outflow;
+    if (best.actual && !(best.coveredKeys ?? []).includes(`${item.scheduleId}|${item.date}`)) {
+      best.actual.items.push({ ...item, key: `${item.scheduleId}|${item.date}` });
+      best.actual.stillDue += item.amount;
+      best.actual.end -= item.amount;
+    }
   }
 
   // Carry leftovers forward: from the real end of the current half when we have it, otherwise as if each half went to plan.
@@ -206,6 +242,7 @@ export function payerByCategory(plan: Awaited<ReturnType<typeof paycheckPlan>>) 
   const out: Record<string, string> = {};
   for (const h of plan.halves) {
     for (const i of h.step1.items) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${h.first.person}'s ${short(h.first.payDate)} check`;
+    for (const i of [...h.step1.items, ...(h.step2?.items ?? [])]) if (i.suggested && i.categoryId && ym(i.date) === plan.month) out[i.categoryId] = `Hearth suggests funding it on ${short(i.date)}`;
     for (const i of h.step2?.items ?? []) if (i.categoryId && ym(i.date) === plan.month && !out[i.categoryId]) out[i.categoryId] = `${h.first.person}'s and ${h.second!.person}'s pooled checks (${short(h.first.payDate)} + ${short(h.second!.payDate).replace(/^\w+ /, '')})`;
   }
   return out;

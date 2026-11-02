@@ -117,3 +117,48 @@ describe('the half we are in uses the real balance', () => {
     expect(p.halves[1]!.carryIn).toBe(Math.max(0, a.end));
   });
 });
+
+describe('adjusting the plan to real life', () => {
+  const live = async () => {
+    const { paycheckPlan } = await import('../src/paychecks');
+    const hid = (await db.query<{ id: string }>('SELECT id FROM households'))[0]!.id;
+    return { hid, p: await paycheckPlan(db, hid, '2026-11', { today: '2026-11-02' }) };
+  };
+
+  it("drops a deleted category's bill from every plan", async () => {
+    const xbox = (await db.query<{ id: string }>("SELECT id FROM categories WHERE name = 'Xbox'"))[0]!.id;
+    await api('DELETE', `/api/categories/${xbox}`);
+    const { p } = await live();
+    expect(p.halves.flatMap((h) => [...h.step1.items, ...(h.step2?.items ?? [])]).some((i) => i.name === 'Xbox')).toBe(false);
+    const cal = (await api('GET', '/api/calendar?month=2026-11')).body.events as { name: string }[];
+    expect(cal.some((e) => e.name === 'Xbox')).toBe(false);
+  });
+
+  it('places a flexible bill on the payday with the most room, and says so', async () => {
+    const lunch = (await db.query<{ id: string }>("SELECT id FROM categories WHERE name = 'Student lunch accounts'"))[0]!.id;
+    await api('PATCH', `/api/categories/${lunch}`, { flexible: true });
+    const { p } = await live();
+    const placed = p.halves.flatMap((h) => [...h.step1.items, ...(h.step2?.items ?? [])].filter((i) => i.name === 'Student lunch accounts' && i.date.startsWith('2026-11')).map((i) => ({ h, i })));
+    expect(placed).toHaveLength(1);
+    expect(placed[0]!.i.suggested).toBe(true);
+    // The tight half we're in (about $600 in checking) isn't the one chosen.
+    expect(placed[0]!.h.first.payDate >= '2026-11-10').toBe(true);
+    expect(placed[0]!.i.date).toBe(placed[0]!.h.second!.payDate);
+    expect((await api('GET', '/api/paychecks?month=2026-11')).body.payers[lunch]).toMatch(/^Hearth suggests funding it on Nov/);
+  });
+
+  it('counts cash pulled since the half began, and lets a line be marked as already paid', async () => {
+    const { hid, p } = await live();
+    const before = p.halves[0]!.actual!;
+    const cashBefore = before.items.find((i) => i.kind === 'cash')?.amount ?? 0;
+    await db.query(`INSERT INTO transactions (id, household_id, external_id, date, amount_cents, merchant, source, flow) VALUES ('atm1', $1, 'atm1', '2026-10-31', -500000, 'ATM WITHDRAWAL', 'bank', 'cash')`, [hid]);
+    const afterCash = (await live()).p.halves[0]!.actual!;
+    expect(afterCash.items.find((i) => i.kind === 'cash')?.amount ?? 0).toBeLessThan(Math.max(1, cashBefore));
+
+    const spectrum = afterCash.items.find((i) => i.name === 'Spectrum Internet & TV')!;
+    await api('POST', '/api/paychecks/covered', { halfId: (await live()).p.halves[0]!.id, key: spectrum.key, covered: true });
+    const marked = (await live()).p.halves[0]!.actual!;
+    expect(marked.items.some((i) => i.name === 'Spectrum Internet & TV')).toBe(false);
+    expect(marked.stillDue).toBe(afterCash.stillDue - spectrum.amount);
+  });
+});

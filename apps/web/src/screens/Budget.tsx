@@ -16,6 +16,8 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
   const [showHidden, setShowHidden] = useState(false);
   const { data, error, reload: reloadBudget } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}${showHidden ? '&all=1' : ''}`), [month, showHidden]);
   const txns = useLoad(() => api.get<Txn[]>(`/api/transactions?month=${month}`), [month]);
+  const flexLoad = useLoad(() => api.get<{ id: string; flexible?: boolean; categoryId?: string | null }[]>('/api/schedules').catch(() => []), []);
+  const flexible = flexLoad.data ? new Set(flexLoad.data.filter((s) => s.flexible && s.categoryId).map((s) => s.categoryId!)) : null;
   const payers = useLoad(() => api.get<{ payers: Record<string, string> }>(`/api/paychecks?month=${month}`).then((r) => r.payers), [month]);
   const reload = () => { reloadBudget(); txns.reload(); };
   const [open, setOpen] = useState<string | null>(null);
@@ -227,6 +229,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
               onChange={(e) => run(async () => { await api.patch(`/api/categories/${n.id}`, { cash: e.target.checked }); })} />
             Paid with cash (envelope)
             <Tip label="About cash envelopes" text="Cash envelopes get filled from ATM withdrawals. Filling the envelope counts as spending this category's money for the month; card purchases here still count too." />
+          </label>
+        )}
+        {isLeaf && n.kind === 'bill' && (
+          <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!flexible?.has(n.id)} style={{ accentColor: 'var(--accent)' }}
+              onChange={(e) => run(async () => { await api.patch(`/api/categories/${n.id}`, { flexible: e.target.checked }); flexLoad.reload(); })} />
+            Flexible timing (Hearth suggests which payday)
+            <Tip label="About flexible timing" text="For bills you can pay whenever you like, like topping up the lunch accounts. Each month Hearth funds it from the half of the month with the most room, on that half's later payday." />
           </label>
         )}
         {isLeaf && (

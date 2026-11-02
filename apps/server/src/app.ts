@@ -134,8 +134,11 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       /** Day of the month it's due, for seasonal categories (shown on the calendar). */
       dueDay: z.number().int().min(1).max(31).nullable().optional(),
       /** Paid from cash envelopes. */
-      cash: z.boolean().optional() }).parse(req.body);
+      cash: z.boolean().optional(),
+      /** Its bill's timing is flexible: Hearth suggests the payday. */
+      flexible: z.boolean().optional() }).parse(req.body);
     await ownCategory(req, id);
+    if (b.flexible !== undefined) await db.query('UPDATE schedules SET flexible = $1 WHERE category_id = $2', [b.flexible, id]);
     if (b.cash !== undefined) await db.query('UPDATE categories SET cash = $1 WHERE id = $2', [b.cash, id]);
     if (b.months !== undefined) {
       const months = b.months ? [...new Set(b.months)].sort((x, y) => x - y) : null;

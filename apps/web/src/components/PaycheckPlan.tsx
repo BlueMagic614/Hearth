@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { api } from '../api';
 import { Tip, todayISO, usd, useLoad } from './ui';
 
-export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean }
+export interface PlanItem { scheduleId: string; categoryId: string | null; name: string; date: string; amount: number; kind: 'bill' | 'save' | 'cash' | 'card'; variable: boolean; suggested?: boolean; key?: string }
 interface Check { person: string; payDate: string; amount: number }
 interface Step { from: string; to: string; items: PlanItem[]; outflow: number; leaves: number }
 export interface Half { id: string; from: string; to: string; first: Check; second: Check | null; step1: Step; step2: (Step & { pool: number }) | null; carryIn: number; income: number; outflow: number; end: number;
-  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null }
+  actual?: { asOf: string; balance: number; stillDue: number; checksToCome: number; end: number; items: PlanItem[] } | null; coveredKeys?: string[] }
 export interface PaycheckView {
   month: string; halves: Half[]; payers: Record<string, string>;
   unscheduled: { categoryId: string; name: string; amount: number; kind: string | null }[];
@@ -27,8 +27,8 @@ export function currentHalf(plan: PaycheckView | null | undefined, today = today
   return { half: h, step };
 }
 
-function Items({ items, today }: { items: PlanItem[]; today: string }) {
-  const [open, setOpen] = useState(false);
+function Items({ items, today, onCover, startOpen }: { items: PlanItem[]; today: string; onCover?: (i: PlanItem) => void; startOpen?: boolean }) {
+  const [open, setOpen] = useState(!!startOpen);
   const bills = items.filter((i) => i.kind === 'bill' || i.kind === 'save').length;
   return (
     <div>
@@ -40,7 +40,14 @@ function Items({ items, today }: { items: PlanItem[]; today: string }) {
           {items.map((i, k) => (
             <li key={k} className={i.date < today && i.kind !== 'cash' && i.kind !== 'card' ? 'done' : undefined}>
               <span className="muted">{i.kind === 'cash' || i.kind === 'card' ? '' : fmt(i.date)}</span>
-              <span>{i.name}{i.variable && i.kind === 'bill' && <span className="muted small"> · varies</span>}{i.kind === 'save' && <span className="pending-badge cash-badge">saving</span>}</span>
+              <span>{i.name}{i.variable && i.kind === 'bill' && <span className="muted small"> · varies</span>}{i.kind === 'save' && <span className="pending-badge cash-badge">saving</span>}
+                {i.suggested && <span className="pending-badge cash-badge" title="Flexible timing: Hearth picked the payday with the most room this month">Hearth's pick</span>}
+                {onCover && i.key && (
+                  <button className="btn sm ghost cover-btn" onClick={() => onCover(i)}
+                    title={i.kind === 'cash' || i.kind === 'card' ? 'Already have it covered (e.g. cash pulled earlier)' : "Already paid (Kemba's balance shows it, the transaction just hasn't come through)"}>
+                    {i.kind === 'cash' || i.kind === 'card' ? 'Already covered' : 'Paid already'}
+                  </button>
+                )}</span>
               <span className="num">{usd(i.amount)}</span>
             </li>
           ))}
@@ -105,7 +112,14 @@ export function PaycheckPlan({ month }: { month: string }) {
                 <Line label={`Left on ${fmt(h.to)}`} value={signed(h.actual.end)} kind={h.actual.end >= 0 ? 'good' : 'bad'} />
                 {h.actual.end < 0 && <div className="notice warn small">That's {usd(-h.actual.end)} short before {fmt(h.to)}. Hold off on a cash withdrawal or move a bill past {fmt(h.to)} if you can.</div>}
                 {h.actual.end >= 0 && h.actual.end < 10000 && <div className="small muted">Tight, but it works. Keep spending to what's listed until {fmt(h.to)}.</div>}
-                <Items items={h.actual.items} today={today} />
+                <Items items={h.actual.items} today={today} startOpen onCover={(i) => api.post('/api/paychecks/covered', { halfId: h.id, key: i.key, covered: true }).then(plan.reload)} />
+                {!!h.coveredKeys?.length && (
+                  <div className="small muted">
+                    {h.coveredKeys.length} line{h.coveredKeys.length === 1 ? '' : 's'} marked as already paid or covered ·{' '}
+                    <button className="btn sm ghost" style={{ padding: 0, height: 'auto', color: 'var(--accent)' }}
+                      onClick={() => Promise.all(h.coveredKeys!.map((k) => api.post('/api/paychecks/covered', { halfId: h.id, key: k, covered: false }))).then(plan.reload)}>Undo</button>
+                  </div>
+                )}
               </div>
             )}
 

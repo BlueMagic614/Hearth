@@ -25,6 +25,8 @@ export interface Schedule {
   months?: number[] | null;
   /** Paid out of the check that lands that day (tithe, savings moves), not by the check before. */
   onPayday?: boolean;
+  /** Timing is up to the household (topping up an account): Hearth suggests the payday with the most room. */
+  flexible?: boolean;
 }
 
 /** A single occurrence moved to another day. */
