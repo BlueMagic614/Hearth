@@ -4,6 +4,7 @@ import { api, type BudgetView, type Txn } from '../api';
 import { CategoryDonut } from '../components/CategoryDonut';
 import { CategoryPicker } from '../components/CategoryPicker';
 import { TagEditor } from '../components/TagEditor';
+import { SeasonEditor, monthsLabel } from '../components/SeasonEditor';
 import { leafOptions } from './Transactions';
 import { SpendingSuggestions } from '../components/SpendingSuggestions';
 import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd } from '../components/ui';
@@ -11,7 +12,8 @@ import { Bar, Icon, MonthPicker, PageHead, Remaining, Tip, Toast, useLoad, usd }
 interface Props { month: string; setMonth: (m: string) => void; onBreakdown: (parentId: string) => void }
 
 export function Budget({ month, setMonth, onBreakdown }: Props) {
-  const { data, error, reload: reloadBudget } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}`), [month]);
+  const [showHidden, setShowHidden] = useState(false);
+  const { data, error, reload: reloadBudget } = useLoad(() => api.get<BudgetView>(`/api/budget?month=${month}${showHidden ? '&all=1' : ''}`), [month, showHidden]);
   const txns = useLoad(() => api.get<Txn[]>(`/api/transactions?month=${month}`), [month]);
   const reload = () => { reloadBudget(); txns.reload(); };
   const [open, setOpen] = useState<string | null>(null);
@@ -209,6 +211,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
           <button className="btn sm ghost danger-text" onClick={() => (n.children.length ? setConfirming(n.id) : remove(n, 'all'))}>{Icon.trash} Delete</button>
         </div>
 
+        {isLeaf && (
+          <SeasonEditor months={n.months} dueDay={data.hidden?.find((h) => h.id === n.id)?.dueDay ?? null}
+            onSave={(months, dueDay) => run(async () => {
+              await api.patch(`/api/categories/${n.id}`, { months, dueDay });
+              setToast({ message: months ? `${n.name} now shows only in ${monthsLabel(months)}.` : `${n.name} is back to every month.` });
+            })} />
+        )}
+
         {!isLeaf && (
           <CategoryDonut total={{ planned: rp(n), spent: rs(n) }}
             slices={n.children.map((c) => ({ id: c.id, name: c.name, planned: rp(c), spent: rs(c), billPaid: c.billPaid }))} />
@@ -343,6 +353,8 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
               </button>
             )}
             {nameCell(n, isTop ? 15 : depth > 1 ? 13 : 14, isTop ? 600 : 400)}
+            {!!n.months?.length && <span className="pending-badge" title="Shows on the budget only in these months">{monthsLabel(n.months)} only</span>}
+            {!!n.months?.length && !n.children.length && n.months.includes(Number(month.slice(5, 7))) && n.planned === 0 && <span className="pending-badge due-badge">Enter this year's amount</span>}
             {n.children.length > 1 && <span className="small count" style={{ color: 'var(--faint)' }}>{n.children.length} {isTop ? 'categories' : 'subcategories'}</span>}
             {isTop && n.children.length > 1 && !editing && (
               <button className="btn sm ghost" style={{ color: 'var(--accent)', padding: '0 6px' }} aria-label={`Breakdown of ${n.name}`} onClick={() => onBreakdown(n.id)}><span className="bd-text">Breakdown </span>→</button>
@@ -433,6 +445,14 @@ export function Budget({ month, setMonth, onBreakdown }: Props) {
             {tops.map((t) => renderNode(t, 0, true))}
           </div>
         </div>
+        {(showHidden || !!data.hidden?.length) && (
+          <div className="small muted hidden-note">
+            {showHidden ? 'Showing every category, including ones that only happen in other months.' : (
+              <>Not shown this month: {data.hidden!.map((h) => `${h.name} (${monthsLabel(h.months)}${h.dueDay ? ` ${h.dueDay}` : ''})`).join(', ')}.</>
+            )}
+            <button className="btn sm ghost" style={{ color: 'var(--accent)' }} onClick={() => setShowHidden(!showHidden)}>{showHidden ? 'Hide them again' : 'Show to edit'}</button>
+          </div>
+        )}
       </div>
 
       {drag && (

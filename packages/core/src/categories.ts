@@ -13,6 +13,8 @@ export interface CategoryRow {
   kind?: string | null;
   /** A fluctuating bill (utilities) with a payment this month: paid, whatever the amount. */
   billPaid?: boolean;
+  /** Only in these months (1–12); planned money is entered for that month alone. Omitted = every month. */
+  months?: number[] | null;
 }
 
 export interface CategoryNode extends CategoryRow {

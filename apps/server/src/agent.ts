@@ -14,7 +14,7 @@ import { assignBudgetMonths, categorize, linkBills, norm } from './sync';
 export const CONFIDENT = 0.8;
 export type Flow = 'spend' | 'income' | 'transfer';
 
-export interface Leaf { id: string; path: string; kind: string | null }
+export interface Leaf { id: string; path: string; kind: string | null; months?: number[] | null }
 export interface PayeeQuestion { key: string; merchant: string; amounts: number[]; bankCategory: string | null }
 /** about: a few words on what the business is, when Claude knows or looked it up ("MealPay: school lunch payments"). */
 export interface PayeeAnswer { categoryId: string | null; confidence: number; about?: string | null }
@@ -256,12 +256,12 @@ export function classifierFromEnv(env = process.env): PayeeClassifier | null {
 // ---------- the run ----------
 
 export async function leavesFor(db: Db, hid: string): Promise<Leaf[]> {
-  const rows = await db.query<{ id: string; name: string; parent_id: string | null; kind: string | null }>(
-    'SELECT id, name, parent_id, kind FROM categories WHERE household_id = $1 AND NOT archived', [hid]);
+  const rows = await db.query<{ id: string; name: string; parent_id: string | null; kind: string | null; months: number[] | null }>(
+    'SELECT id, name, parent_id, kind, months FROM categories WHERE household_id = $1 AND NOT archived', [hid]);
   const byId = new Map(rows.map((r) => [r.id, r]));
   const hasKids = new Set(rows.map((r) => r.parent_id).filter(Boolean));
   const path = (r: (typeof rows)[number]): string => (r.parent_id && byId.get(r.parent_id) ? `${path(byId.get(r.parent_id)!)} › ${r.name}` : r.name);
-  return rows.filter((r) => !hasKids.has(r.id)).map((r) => ({ id: r.id, path: path(r), kind: r.kind }));
+  return rows.filter((r) => !hasKids.has(r.id)).map((r) => ({ id: r.id, path: path(r), kind: r.kind, months: r.months }));
 }
 
 export interface AgentResult { remembered: number; model: number; bank: number; claude: number; review: number; researched?: number; claudeError?: string }

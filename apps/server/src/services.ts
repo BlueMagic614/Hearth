@@ -6,17 +6,45 @@ import type { Db } from './db';
 
 const num = (v: unknown) => (v === null || v === undefined ? 0 : Number(v));
 
-export async function categoryRows(db: Db, hid: string, month: YearMonth): Promise<CategoryRow[]> {
-  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown; bill_paid: boolean }>(
-    `SELECT c.id, c.name, c.parent_id, c.sort_order, c.kind,
-       COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month <= $2 ORDER BY b.month DESC LIMIT 1), 0) AS planned,
+/**
+ * Categories with this month's planned and spent amounts. Seasonal categories (months set) carry no planned money
+ * between seasons: their amount is entered for the month itself. Out of season they're left out (unless something
+ * was spent there), and so is a parent left with nothing inside; pass includeHidden to get everything.
+ */
+export async function categoryRows(db: Db, hid: string, month: YearMonth, opts: { includeHidden?: boolean } = {}): Promise<CategoryRow[]> {
+  const rows = await db.query<{ id: string; name: string; parent_id: string | null; sort_order: number; kind: string | null; planned: unknown; spent: unknown; bill_paid: boolean; months: number[] | null }>(
+    `SELECT c.id, c.name, c.parent_id, c.sort_order, c.kind, c.months,
+       CASE WHEN c.months IS NULL
+         THEN COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month <= $2 ORDER BY b.month DESC LIMIT 1), 0)
+         ELSE COALESCE((SELECT b.planned_cents FROM budgets b WHERE b.category_id = c.id AND b.month = $2), 0) END AS planned,
        COALESCE((SELECT -SUM(t.amount_cents) FROM transactions t WHERE t.category_id = c.id AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2), 0) AS spent,
        COALESCE((SELECT bool_or(s.variable) FROM schedules s WHERE s.category_id = c.id), FALSE)
          AND EXISTS (SELECT 1 FROM transactions t WHERE t.category_id = c.id AND t.schedule_id IS NOT NULL AND t.amount_cents < 0 AND COALESCE(t.budget_month, to_char(t.date, 'YYYY-MM')) = $2) AS bill_paid
      FROM categories c WHERE c.household_id = $1 AND NOT c.archived`,
     [hid, month],
   );
-  return rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid }));
+  let out: CategoryRow[] = rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id, sortOrder: r.sort_order, kind: r.kind, planned: num(r.planned), spent: num(r.spent), billPaid: !!r.bill_paid, months: r.months }));
+  if (opts.includeHidden) return out;
+  const mm = Number(month.slice(5, 7));
+  const wasParent = new Set(out.map((r) => r.parentId).filter(Boolean));
+  out = out.filter((r) => !r.months?.length || r.months.includes(mm) || r.spent !== 0 || r.planned !== 0);
+  // Drop parents emptied by hidden categories, from the bottom up.
+  for (let changed = true; changed;) {
+    const hasKids = new Set(out.map((r) => r.parentId).filter(Boolean));
+    const before = out.length;
+    out = out.filter((r) => !(wasParent.has(r.id) && !hasKids.has(r.id)));
+    changed = out.length !== before;
+  }
+  return out;
+}
+
+/** Seasonal categories not shown this month, with when they come round. */
+export async function hiddenCategories(db: Db, hid: string, month: YearMonth) {
+  const shown = new Set((await categoryRows(db, hid, month)).map((r) => r.id));
+  const rows = await db.query<{ id: string; name: string; months: number[]; due: number[] | null }>(
+    `SELECT c.id, c.name, c.months, (SELECT s.days FROM schedules s WHERE s.category_id = c.id AND s.months IS NOT NULL LIMIT 1) AS due
+     FROM categories c WHERE c.household_id = $1 AND NOT c.archived AND c.months IS NOT NULL ORDER BY c.name`, [hid]);
+  return rows.filter((r) => !shown.has(r.id)).map((r) => ({ id: r.id, name: r.name, months: r.months, dueDay: r.due?.[0] ?? null }));
 }
 
 /**
@@ -39,13 +67,13 @@ export async function monthlyIncome(db: Db, hid: string): Promise<number> {
   return rows.reduce((s, r) => s + r.amount_cents * (r.cadence === 'semimonthly' ? r.days.length : 1), 0);
 }
 
-export async function budgetView(db: Db, hid: string, month: YearMonth) {
-  const rows = await categoryRows(db, hid, month);
+export async function budgetView(db: Db, hid: string, month: YearMonth, opts: { includeHidden?: boolean } = {}) {
+  const rows = await categoryRows(db, hid, month, opts);
   const tree = buildTree(rows);
   const income = await monthlyIncome(db, hid);
   const plannedTotal = leaves(tree).reduce((s, n) => s + n.planned, 0);
   const spentTotal = leaves(tree).reduce((s, n) => s + n.spent, 0);
-  return { month, income, plannedTotal, spentTotal, leftToAssign: income - plannedTotal, tree };
+  return { month, income, plannedTotal, spentTotal, leftToAssign: income - plannedTotal, tree, hidden: await hiddenCategories(db, hid, month) };
 }
 
 /** Sets the planned amount for one month (upsert). */
@@ -57,7 +85,7 @@ export async function setPlanned(db: Db, categoryId: string, month: YearMonth, c
 }
 
 export async function schedulesFor(db: Db, hid: string): Promise<Schedule[]> {
-  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null; date_source: string; window_days: number }>(
+  const bills = await db.query<{ id: string; name: string; kind: string; amount_cents: number; cadence: string; days: number[]; weekday: number | null; weekend_rule: string; variable: boolean; category_id: string | null; date_source: string; window_days: number; months: number[] | null }>(
     'SELECT * FROM schedules WHERE household_id = $1', [hid],
   );
   const pay = await db.query<{ id: string; person: string; amount_cents: number; cadence: string; days: number[]; weekend_rule: string; date_source: string; window_days: number }>('SELECT * FROM income_sources WHERE household_id = $1', [hid]);
@@ -68,7 +96,7 @@ export async function schedulesFor(db: Db, hid: string): Promise<Schedule[]> {
     })),
     ...bills.map((b): Schedule => ({
       id: b.id, name: b.name, kind: b.kind as Schedule['kind'], amount: b.amount_cents, cadence: b.cadence as Schedule['cadence'], days: b.days,
-      weekday: b.weekday ?? undefined, weekendRule: b.weekend_rule as Schedule['weekendRule'], variable: b.variable, categoryId: b.category_id,
+      weekday: b.weekday ?? undefined, weekendRule: b.weekend_rule as Schedule['weekendRule'], variable: b.variable, categoryId: b.category_id, months: b.months,
       dateSource: b.date_source as DateSource, windowDays: b.window_days,
     })),
   ];

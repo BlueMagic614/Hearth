@@ -107,8 +107,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
 
   // ---------- budget & categories ----------
   app.get('/api/budget', async (req) => {
-    const q = z.object({ month: monthSchema.optional() }).parse(req.query);
-    return budgetView(db, hid(req), q.month ?? currentMonth());
+    const q = z.object({ month: monthSchema.optional(), all: z.string().optional() }).parse(req.query);
+    return budgetView(db, hid(req), q.month ?? currentMonth(), { includeHidden: q.all === '1' });
   });
 
   app.post('/api/categories', async (req) => {
@@ -123,12 +123,30 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
 
   app.patch('/api/categories/:id', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
-    const b = z.object({ name: z.string().trim().min(1).max(80).optional(), parentId: z.string().nullable().optional(), sortOrder: z.number().int().optional(), planned: money.optional(), month: monthSchema.optional() }).parse(req.body);
+    const b = z.object({ name: z.string().trim().min(1).max(80).optional(), parentId: z.string().nullable().optional(), sortOrder: z.number().int().optional(), planned: money.optional(), month: monthSchema.optional(),
+      /** Only in these months (1–12), or null for every month. */
+      months: z.array(z.number().int().min(1).max(12)).min(1).max(12).nullable().optional(),
+      /** Day of the month it's due, for seasonal categories (shown on the calendar). */
+      dueDay: z.number().int().min(1).max(31).nullable().optional() }).parse(req.body);
     await ownCategory(req, id);
+    if (b.months !== undefined) {
+      const months = b.months ? [...new Set(b.months)].sort((x, y) => x - y) : null;
+      await db.query('UPDATE categories SET months = $1 WHERE id = $2', [months, id]);
+      const sched = (await db.query<{ id: string }>('SELECT id FROM schedules WHERE category_id = $1 LIMIT 1', [id]))[0];
+      if (sched) {
+        await db.query("UPDATE schedules SET months = $1 WHERE id = $2", [months, sched.id]);
+        if (b.dueDay) await db.query("UPDATE schedules SET days = $1, date_source = 'manual', window_days = 0 WHERE id = $2", [[b.dueDay], sched.id]);
+      } else if (months && b.dueDay) {
+        const name = (await db.query<{ name: string }>('SELECT name FROM categories WHERE id = $1', [id]))[0]!.name;
+        await db.query(
+          `INSERT INTO schedules (id, household_id, name, kind, amount_cents, cadence, days, months, category_id, date_source, window_days)
+           VALUES ($1,$2,$3,'bill',0,'monthly',$4,$5,$6,'manual',0)`, [newId(), hid(req), name, [b.dueDay], months, id]);
+      }
+    }
     if (b.name !== undefined) await db.query('UPDATE categories SET name = $1 WHERE id = $2', [b.name, id]);
     if (b.parentId !== undefined) {
       if (b.parentId) await ownCategory(req, b.parentId);
-      const rows = await categoryRows(db, hid(req), b.month ?? currentMonth());
+      const rows = await categoryRows(db, hid(req), b.month ?? currentMonth(), { includeHidden: true });
       if (wouldCycle(rows, id, b.parentId)) throw new HttpError(400, 'A category cannot go inside itself');
       if (b.parentId) await ensureParent(hid(req), b.parentId, b.month ?? currentMonth());
       await db.query('UPDATE categories SET parent_id = $1, sort_order = $2 WHERE id = $3', [b.parentId, await nextSort(hid(req), b.parentId), id]);
@@ -138,6 +156,8 @@ export async function buildApp(db: Db, opts: { webOrigin?: string; secureCookies
       const kids = await db.query('SELECT 1 FROM categories WHERE parent_id = $1 AND NOT archived LIMIT 1', [id]);
       if (kids.length) throw new HttpError(400, 'Set amounts on the categories inside a parent');
       await setPlanned(db, id, b.month ?? currentMonth(), b.planned);
+      // A seasonal bill's calendar amount follows what's planned for its month.
+      await db.query('UPDATE schedules SET amount_cents = $1 WHERE category_id = $2 AND months IS NOT NULL', [-b.planned, id]);
     }
     return { ok: true };
   });

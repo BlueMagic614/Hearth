@@ -125,3 +125,29 @@ describe('end-of-month bill paid late', () => {
     expect(nov.filter((e) => e.name === 'Columbia Gas').map((e) => e.date)).toEqual(['2026-11-02', '2026-11-30']);
   });
 });
+
+describe('yearly categories', () => {
+  it('hides car registration except in May, with no monthly amount, and puts it on the calendar for May 29', async () => {
+    const id = (await db.query<{ id: string }>("SELECT id FROM categories WHERE name LIKE 'Car registration%'"))[0]!.id;
+    const before = (await api('GET', '/api/budget?month=2026-11')).body;
+    await api('PATCH', `/api/categories/${id}`, { months: [5], dueDay: 29 });
+
+    const nov = (await api('GET', '/api/budget?month=2026-11')).body;
+    expect(find(nov.tree, 'Car registration (yearly)')).toBeUndefined();
+    expect(nov.plannedTotal).toBe(before.plannedTotal - 1500);
+    expect(nov.hidden).toEqual([expect.objectContaining({ name: 'Car registration (yearly)', months: [5], dueDay: 29 })]);
+    // Still reachable when asked for everything (for editing).
+    expect(find((await api('GET', '/api/budget?month=2026-11&all=1')).body.tree, 'Car registration (yearly)')).toBeTruthy();
+
+    const may = (await api('GET', '/api/budget?month=2027-05')).body;
+    const reg = find(may.tree, 'Car registration (yearly)') as Node & { planned: number };
+    expect(reg.planned).toBe(0);
+    await api('PATCH', `/api/categories/${id}`, { planned: 118.5, month: '2027-05' });
+    expect((find((await api('GET', '/api/budget?month=2027-05')).body.tree, 'Car registration (yearly)') as Node & { planned: number }).planned).toBe(11850);
+    const cal = (await api('GET', '/api/calendar?month=2027-05')).body.events as { name: string; date: string; amount: number }[];
+    expect(cal.filter((e) => e.name.startsWith('Car registration'))).toEqual([expect.objectContaining({ date: '2027-05-29', amount: -11850 })]);
+    // June: hidden again, nothing carried forward.
+    expect(find((await api('GET', '/api/budget?month=2027-06')).body.tree, 'Car registration (yearly)')).toBeUndefined();
+    expect(((await api('GET', '/api/calendar?month=2027-06')).body.events as { name: string }[]).some((e) => e.name.startsWith('Car registration'))).toBe(false);
+  });
+});

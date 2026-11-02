@@ -285,3 +285,11 @@ body.dragging, body.dragging * { user-select: none; -webkit-user-select: none; c
 .chev svg { transition: transform .18s ease; }
 .chev.shut svg { transform: rotate(-90deg); }
 @media (prefers-reduced-motion: reduce) { .chev svg { transition: none; } }
+
+/* Seasonal categories */
+.season { display: grid; gap: 8px; }
+.season-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.month-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip.sm { height: 28px; padding: 0 9px; font-size: 12px; }
+.due-badge { background: var(--warn-soft); color: var(--warn-ink); }
+.hidden-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 4px 0; }

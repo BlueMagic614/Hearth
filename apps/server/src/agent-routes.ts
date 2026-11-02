@@ -25,7 +25,8 @@ export async function budgetSuggestions(db: Db, hid: string, month: string, toda
   const days = daysBetween(start, end) + 1;
   if (days < 28) return { ready: false as const, reason: `Only ${days} days of history so far. Suggestions need about a month.` };
 
-  const leaves = (await leavesFor(db, hid)).filter((l) => l.kind === 'everyday');
+  // Seasonal categories (yearly registration) aren't averaged into a monthly amount.
+  const leaves = (await leavesFor(db, hid)).filter((l) => l.kind === 'everyday' && !l.months);
   const spent = new Map((await db.query<{ category_id: string; total: unknown; n: unknown }>(
     `SELECT category_id, -SUM(amount_cents) AS total, COUNT(*) AS n FROM transactions
      WHERE household_id = $1 AND flow = 'spend' AND category_id IS NOT NULL AND date BETWEEN $2 AND $3 GROUP BY category_id`, [hid, start, end])).map((r) => [r.category_id, { total: Number(r.total), n: Number(r.n) }]));

@@ -21,6 +21,8 @@ export interface Schedule {
   dateSource?: DateSource;
   /** Days either side of the expected date the money usually moves. */
   windowDays?: number;
+  /** Only in these months (1–12), e.g. [5] for a yearly bill due in May. Omitted = every month. */
+  months?: number[] | null;
 }
 
 /** A single occurrence moved to another day. */
@@ -46,7 +48,9 @@ export interface ScheduledEvent {
 function rawEvents(schedules: Schedule[], month: YearMonth): ScheduledEvent[] {
   const last = daysInMonth(month);
   const out: ScheduledEvent[] = [];
+  const mm = Number(month.slice(5, 7));
   for (const s of schedules) {
+    if (s.months?.length && !s.months.includes(mm)) continue;
     let dates: ISODate[] = [];
     if (s.cadence === 'weekly' && s.weekday !== undefined) {
       for (let d = 1; d <= last; d++) {
